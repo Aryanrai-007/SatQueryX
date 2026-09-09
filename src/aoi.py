@@ -21,21 +21,8 @@ APP_UA = "SatQueryX/0.1 (+https://github.com/Aryanrai-007/SatQueryX)"
 
 
 def build_aoi_map(center: tuple[float, float], zoom: int = 11, key: str = "satqueryx_aoi_map"):
-    m = folium.Map(
-        location=list(center),
-        zoom_start=zoom,
-        tiles="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-        attr="© OpenStreetMap contributors",
-        control_scale=True,
-        prefer_canvas=True,
-    )
-    Draw(
-        export=False,
-        position="topleft",
-        draw_options={"polyline": False, "polygon": True, "rectangle": True, "circle": False, "circlemarker": False, "marker": False},
-        edit_options={"edit": True, "remove": True},
-    ).add_to(m)
-    folium.LayerControl(collapsed=True).add_to(m)
+    m = folium.Map(location=list(center), zoom_start=zoom, tiles="https://tile.openstreetmap.org/{z}/{x}/{y}.png", attr="© OpenStreetMap contributors", control_scale=True, prefer_canvas=True)
+    Draw(export=False, position="topleft", draw_options={"polyline": False, "polygon": True, "rectangle": True, "circle": False, "circlemarker": False, "marker": False}, edit_options={"edit": True, "remove": True}).add_to(m)
     return st_folium(m, height=520, use_container_width=True, key=key, returned_objects=["last_active_drawing", "all_drawings", "center", "zoom"])
 
 
@@ -43,9 +30,7 @@ def geometry_from_drawing(drawing: dict[str, Any] | None) -> dict[str, Any] | No
     if not drawing:
         return None
     geometry = drawing.get("geometry") if isinstance(drawing, dict) else None
-    if not geometry or geometry.get("type") not in {"Polygon", "MultiPolygon"}:
-        return None
-    return geometry
+    return geometry if geometry and geometry.get("type") in {"Polygon", "MultiPolygon"} else None
 
 
 def geometry_bbox(geometry: dict[str, Any]) -> tuple[float, float, float, float]:
@@ -72,19 +57,11 @@ def bbox_center(bbox: tuple[float, float, float, float]) -> tuple[float, float]:
 def reverse_geocode(lat: float, lon: float) -> str:
     response = requests.get(NOMINATIM_URL, params={"lat": lat, "lon": lon, "format": "jsonv2", "zoom": 10}, headers={"User-Agent": APP_UA}, timeout=15)
     response.raise_for_status()
-    data = response.json()
-    return str(data.get("display_name") or "Location name unavailable")
+    return str(response.json().get("display_name") or "Location name unavailable")
 
 
 def search_sentinel2(bbox: tuple[float, float, float, float], start_date: date, end_date: date, max_cloud: float = 15.0, limit: int = 12) -> list[dict[str, Any]]:
-    payload = {
-        "collections": [S2_COLLECTION],
-        "bbox": list(bbox),
-        "datetime": f"{start_date.isoformat()}/{end_date.isoformat()}",
-        "query": {"eo:cloud_cover": {"lte": float(max_cloud)}},
-        "limit": int(limit),
-        "sortby": [{"field": "properties.datetime", "direction": "desc"}],
-    }
+    payload = {"collections": [S2_COLLECTION], "bbox": list(bbox), "datetime": f"{start_date.isoformat()}/{end_date.isoformat()}", "query": {"eo:cloud_cover": {"lte": float(max_cloud)}}, "limit": int(limit), "sortby": [{"field": "datetime", "direction": "desc"}]}
     response = requests.post(f"{STAC_URL}/search", json=payload, headers={"User-Agent": APP_UA, "Accept": "application/geo+json"}, timeout=30)
     response.raise_for_status()
     return response.json().get("features", [])
@@ -136,7 +113,7 @@ def fetch_sentinel2_snippet(item: dict[str, Any], bbox: tuple[float, float, floa
             raise ValueError("Sentinel-2 band windows have incompatible shapes.")
         arrays.append(array)
     stack = np.stack(arrays).astype(np.uint16)
-    profile = {"driver": "GTiff", "height": stack.shape[1], "width": stack.shape[2], "count": 4, "dtype": "uint16", "crs": crs, "transform": transform, "compress": "deflate", "tiled": True, "BIGTIFF": "IF_SAFER"}
+    profile = {"driver": "GTiff", "height": stack.shape[1], "width": stack.shape[2], "count": 4, "dtype": "uint16", "crs": crs, "transform": transform, "compress": "deflate", "BIGTIFF": "IF_SAFER"}
     output = BytesIO()
     with MemoryFile() as mem:
         with mem.open(**profile) as dst:
@@ -147,16 +124,7 @@ def fetch_sentinel2_snippet(item: dict[str, Any], bbox: tuple[float, float, floa
             dst.set_band_description(4, "NIR (B08)")
         output.write(mem.read())
     props = item.get("properties", {})
-    metadata = {
-        "scene_id": item.get("id", "unknown"),
-        "datetime": props.get("datetime") or props.get("start_datetime"),
-        "cloud_cover": props.get("eo:cloud_cover"),
-        "collection": item.get("collection") or S2_COLLECTION,
-        "source": "Element84 Earth Search / AWS Open Data",
-        "bbox": bbox,
-        "crs": str(crs) if crs else None,
-        "bands": ["B02", "B03", "B04", "B08"],
-    }
+    metadata = {"scene_id": item.get("id", "unknown"), "datetime": props.get("datetime") or props.get("start_datetime"), "cloud_cover": props.get("eo:cloud_cover"), "collection": item.get("collection") or S2_COLLECTION, "source": "Element84 Earth Search / AWS Open Data", "bbox": bbox, "crs": str(crs) if crs else None, "bands": ["B02", "B03", "B04", "B08"]}
     return output.getvalue(), metadata
 
 
