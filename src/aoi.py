@@ -124,7 +124,20 @@ def fetch_sentinel2_snippet(item: dict[str, Any], bbox: tuple[float, float, floa
             dst.set_band_description(4, "NIR (B08)")
         output.write(mem.read())
     props = item.get("properties", {})
-    metadata = {"scene_id": item.get("id", "unknown"), "datetime": props.get("datetime") or props.get("start_datetime"), "cloud_cover": props.get("eo:cloud_cover"), "collection": item.get("collection") or S2_COLLECTION, "source": "Element84 Earth Search / AWS Open Data", "bbox": bbox, "crs": str(crs) if crs else None, "bands": ["B02", "B03", "B04", "B08"]}
+    metadata = {
+        "scene_id": item.get("id", "unknown"),
+        "datetime": props.get("datetime") or props.get("start_datetime"),
+        "cloud_cover": props.get("eo:cloud_cover"),
+        "collection": item.get("collection") or S2_COLLECTION,
+        "source": "Element84 Earth Search / AWS Open Data",
+        "bbox": bbox,
+        "crs": str(crs) if crs else None,
+        "bands": ["B02", "B03", "B04", "B08"],
+        "platform": props.get("platform") or "Sentinel-2",
+        "instruments": props.get("instruments") or ["MSI"],
+        "mgrs_tile": props.get("s2:mgrs_tile"),
+        "epsg": props.get("proj:epsg"),
+    }
     return output.getvalue(), metadata
 
 
