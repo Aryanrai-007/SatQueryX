@@ -45,28 +45,31 @@ def build_evidence(results: dict[str, Any]) -> EvidenceBundle:
                 sources.append("AOI footprint calculation")
                 if site.get("elevation"):
                     e = site["elevation"]
-                    facts.append(f"Surface elevation from Copernicus DEM GLO-30: mean={e['mean_m']:.1f} m, median={e['median_m']:.1f} m, range={e['min_m']:.1f}–{e['max_m']:.1f} m, relief={e['relief_m']:.1f} m.")
-                    sources.append("Copernicus DEM GLO-30")
+                    facts.append(f"{e['source']}: mean={e['mean_m']:.1f} m, median={e['median_m']:.1f} m, range={e['min_m']:.1f}–{e['max_m']:.1f} m, relief={e['relief_m']:.1f} m from {e.get('samples', 0)} valid sampled cells.")
+                    sources.append(e["source"])
                 wc = site.get("worldcover")
                 if wc and wc.get("rows"):
-                    top = wc["rows"][:6]
+                    top = wc["rows"][:8]
                     facts.append("ESA WorldCover land-cover composition: " + ", ".join(f"{r['label']}={r['fraction']:.1%} ({r['area_ha']:.2f} ha)" for r in top) + ".")
                     grass = next((r for r in wc["rows"] if r["class"] == 30), None)
-                    water = next((r for r in wc["rows"] if r["class"] == 80), None)
+                    water_cls = next((r for r in wc["rows"] if r["class"] == 80), None)
+                    built = next((r for r in wc["rows"] if r["class"] == 50), None)
                     if grass:
-                        facts.append(f"Mapped grassland area: {grass['area_ha']:.2f} hectares ({grass['fraction']:.1%} of the WorldCover-mapped AOI pixels).")
-                    if water:
-                        facts.append(f"Mapped permanent-water area: {water['area_ha']:.2f} hectares ({water['fraction']:.1%} of the WorldCover-mapped AOI pixels).")
-                    sources.append("ESA WorldCover 2021 v200")
+                        facts.append(f"Mapped grassland area: {grass['area_ha']:.2f} hectares ({grass['fraction']:.1%} of WorldCover-mapped pixels).")
+                    if built:
+                        facts.append(f"Mapped built-up area: {built['area_ha']:.2f} hectares ({built['fraction']:.1%} of WorldCover-mapped pixels).")
+                    if water_cls:
+                        facts.append(f"Mapped permanent-water area: {water_cls['area_ha']:.2f} hectares ({water_cls['fraction']:.1%} of WorldCover-mapped pixels).")
+                    sources.append("ESA WorldCover 2021 v200 (10 m)")
                 water = site.get("waterways")
                 if water:
                     if water.get("names"):
-                        facts.append("OpenStreetMap mapped water features in/near the AOI: " + ", ".join(water["names"]) + ".")
+                        facts.append("OpenStreetMap mapped water features in the AOI/context area: " + ", ".join(water["names"]) + ".")
                     elif water.get("count"):
-                        facts.append(f"OpenStreetMap identifies {water['count']} mapped water/waterway feature(s) in the AOI; no feature name was returned.")
+                        facts.append(f"OpenStreetMap identifies {water['count']} mapped water/waterway feature(s) in the AOI/context area; no feature name was returned.")
                     else:
-                        facts.append("OpenStreetMap returned no mapped river, stream, canal, drain, or natural-water feature inside the selected AOI bbox.")
-                    sources.append("OpenStreetMap / Overpass API")
+                        facts.append("OpenStreetMap returned no mapped river, stream, canal, drain, or natural-water feature in the queried AOI/context area.")
+                    sources.append(water.get("source", "OpenStreetMap / Overpass API"))
                 for limitation in site.get("limitations", []):
                     facts.append("Site-intelligence limitation: " + limitation)
         except Exception as exc:
@@ -102,12 +105,13 @@ def build_evidence(results: dict[str, Any]) -> EvidenceBundle:
 
 
 def synthesize_answer(query: str, evidence: EvidenceBundle, image: Image.Image | None = None) -> tuple[str, str]:
-    """Return answer + provider. If no provider is configured, fail rather than fabricate."""
     gemini = GeminiClient()
     confidence_text = f"{evidence.confidence:.2f}" if evidence.confidence is not None else "not estimated"
     prompt = (
         "You are SatQueryX, a remote-sensing analysis assistant. Answer ONLY from the supplied evidence. "
-        "Do not invent objects, locations, dates, sensor properties, or certainty. Clearly state limitations.\n\n"
+        "Do not invent objects, locations, dates, sensor properties, or certainty. Clearly state limitations. "
+        "When the evidence contains land-cover, elevation, water-feature, vegetation, change, or detection facts, "
+        "use them explicitly and distinguish mapped classification from direct Sentinel-2 measurements.\n\n"
         f"User query: {query}\n\n"
         "Computed evidence:\n- " + "\n- ".join(evidence.facts) +
         f"\n\nDetector confidence (only when available): {confidence_text}\nSources: {', '.join(evidence.sources)}"
