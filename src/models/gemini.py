@@ -14,7 +14,9 @@ class GeminiClient:
         if self.api_key:
             try:
                 from google import genai
-                self._client = genai.Client(api_key=self.api_key)
+                from google.genai import types
+                timeout_ms = int(os.getenv("GEMINI_TIMEOUT_MS", "45000"))
+                self._client = genai.Client(http_options=types.HttpOptions(timeout=timeout_ms))
             except ImportError as exc:
                 raise RuntimeError("google-genai is not installed. Install requirements.txt.") from exc
 
@@ -27,7 +29,14 @@ class GeminiClient:
             raise RuntimeError("GEMINI_API_KEY is not configured. Add it to .env to enable LLM synthesis.")
         contents = [prompt]
         contents.extend(list(images))
-        response = self._client.models.generate_content(model=self.model_name, contents=contents)
+        try:
+            response = self._client.models.generate_content(
+                model=self.model_name,
+                contents=contents,
+                config={"max_output_tokens": 1200},
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Gemini synthesis failed or timed out: {exc}") from exc
         text = getattr(response, "text", None)
         if not text:
             raise RuntimeError("Gemini returned no text response.")
