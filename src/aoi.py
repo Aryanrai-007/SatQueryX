@@ -74,38 +74,43 @@ def _stac_error(response: requests.Response) -> str:
     return text[:500] if text else f"HTTP {response.status_code}"
 
 
+def _rfc3339_interval(start_date: date, end_date: date) -> str:
+    """Build an RFC3339 STAC interval covering both calendar dates."""
+    return f"{start_date.isoformat()}T00:00:00Z/{end_date.isoformat()}T23:59:59Z"
+
+
 def search_sentinel2(bbox: tuple[float, float, float, float], start_date: date, end_date: date, max_cloud: float = 15.0, limit: int = 12) -> list[dict[str, Any]]:
+    if start_date > end_date:
+        raise ValueError("Search start date must be on or before the end date.")
+
     url = f"{STAC_URL}/search"
     headers = {"User-Agent": APP_UA, "Accept": "application/geo+json"}
     base_payload = {
         "collections": [S2_COLLECTION],
         "bbox": list(bbox),
-        "datetime": f"{start_date.isoformat()}/{end_date.isoformat()}",
+        "datetime": _rfc3339_interval(start_date, end_date),
         "limit": int(limit),
     }
 
-    # Earth Search already returns results newest-first by datetime, so do not
-    # send an optional sortby clause. This avoids compatibility problems with
-    # STAC server versions while preserving the desired ordering.
     filtered_payload = {
         **base_payload,
         "query": {"eo:cloud_cover": {"lte": float(max_cloud)}},
     }
     response = requests.post(url, json=filtered_payload, headers=headers, timeout=30)
 
-    # Some STAC deployments can reject the query extension even though the
-    # catalog advertises it. Fall back to an unfiltered metadata search and
-    # apply the cloud threshold locally; the returned scenes remain genuine
-    # Earth Search records and no imagery is fabricated.
     if response.status_code == 400:
         fallback = requests.post(url, json=base_payload, headers=headers, timeout=30)
         if fallback.ok:
             features = fallback.json().get("features", [])
-            return [
-                feature
-                for feature in features
-                if float(feature.get("properties", {}).get("eo:cloud_cover", 101.0)) <= float(max_cloud)
-            ]
+            filtered = []
+            for feature in features:
+                cloud = feature.get("properties", {}).get("eo:cloud_cover")
+                try:
+                    if cloud is not None and float(cloud) <= float(max_cloud):
+                        filtered.append(feature)
+                except (TypeError, ValueError):
+                    continue
+            return filtered
         raise RuntimeError(f"Earth Search rejected the AOI search ({fallback.status_code}): {_stac_error(fallback)}")
 
     if not response.ok:
