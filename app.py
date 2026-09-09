@@ -51,7 +51,7 @@ if "aoi_secondary_meta" not in st.session_state:
     st.session_state["aoi_secondary_meta"] = None
 
 st.header("🗺️ Select an Area of Interest")
-st.caption("Pan/zoom the OpenStreetMap base map, then use the Leaflet rectangle or polygon tool to draw the exact area you want SatQueryX to analyze.")
+st.caption("Pan/zoom the map, switch between Street / Satellite / Topographic basemaps, then draw the exact area you want SatQueryX to analyze.")
 map_data = build_aoi_map(st.session_state["aoi_center"], zoom=11)
 drawing = geometry_from_drawing(map_data.get("last_active_drawing") if map_data else None)
 if drawing:
@@ -78,7 +78,7 @@ if st.session_state["aoi_geometry"]:
 
 with st.expander("🛰️ Automatic satellite data fetch", expanded=True):
     d1, d2, d3 = st.columns(3)
-    start_default, end_default = default_dates(365)
+    start_default, end_default = default_dates()
     with d1:
         cloud_limit = st.slider("Maximum cloud cover", 1, 80, 15, 1)
     with d2:
@@ -91,7 +91,7 @@ with st.expander("🛰️ Automatic satellite data fetch", expanded=True):
         try:
             bbox = geometry_bbox(st.session_state["aoi_geometry"])
             with st.spinner("Searching Earth Search and clipping Sentinel-2 imagery to your AOI…"):
-                features = search_sentinel2(bbox, start_date, end_date, max_cloud=float(cloud_limit), limit=12)
+                features = search_sentinel2(bbox, start_date, end_date, max_cloud=float(cloud_limit))
                 selected = select_items(features, count=2, min_gap_days=14) if mode.startswith("Two") else select_items(features, count=1)
                 if not selected:
                     raise ValueError("No Sentinel-2 L2A scene matching the AOI, date range and cloud limit was found.")
@@ -322,4 +322,4 @@ if "satquery_result" in st.session_state:
             st.download_button("Download PDF report", data=pdf, file_name="satqueryx_report.pdf", mime="application/pdf", use_container_width=True)
 
 st.divider()
-st.caption("SatQueryX • no authentication • real-data pipeline • OpenStreetMap + Leaflet AOI selection • external model/API credentials are never committed to the repository")
+st.caption("SatQueryX • no authentication • real-data pipeline • OpenStreetMap + satellite basemap + Leaflet AOI selection • external model/API credentials are never committed to the repository")
