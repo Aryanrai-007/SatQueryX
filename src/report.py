@@ -60,6 +60,94 @@ def _metadata_table(rows: list[list[str]]) -> Table:
     ]))
 
 
+def _site_summary_story(aoi: dict[str, Any], results: dict[str, Any], styles: Any) -> list[Any]:
+    site = results.get("site_summary")
+    if not site:
+        return []
+
+    location = aoi.get("location") or "Selected AOI"
+    area = site.get("bbox_area_ha")
+    story: list[Any] = [
+        Spacer(1, 8),
+        Paragraph("Location & environmental summary", styles["Heading2"]),
+        Paragraph(
+            _safe_text(
+                f"The selected area is {location}. Its selected WGS84 bounding-box footprint is approximately "
+                f"{area:.2f} hectares. The summary below combines the Sentinel-2 analysis with independent "
+                f"Copernicus DEM, ESA WorldCover and OpenStreetMap context; values are reported only when the "
+                f"corresponding source was successfully retrieved."
+            ),
+            styles["BodyText"],
+        ),
+    ]
+
+    e = site.get("elevation")
+    if e:
+        story.extend([
+            Spacer(1, 5),
+            Paragraph("Terrain / elevation", styles["Heading3"]),
+            _metadata_table([
+                ["Property", "Value"],
+                ["Elevation source", _safe_text(e.get("source", "Copernicus DEM GLO-30"))],
+                ["Elevation model", _safe_text(e.get("model", "Digital Surface Model"))],
+                ["Mean surface elevation", f"{e['mean_m']:.1f} m"],
+                ["Median surface elevation", f"{e['median_m']:.1f} m"],
+                ["Minimum / maximum", f"{e['min_m']:.1f} m / {e['max_m']:.1f} m"],
+                ["Relief across sampled AOI", f"{e['relief_m']:.1f} m"],
+                ["Valid elevation samples", str(e.get("samples", "Unavailable"))],
+            ]),
+            Paragraph(
+                "Elevation is a surface-elevation (DSM) measurement, so buildings and vegetation can contribute to the measured surface height.",
+                styles["BodyText"],
+            ),
+        ])
+
+    wc = site.get("worldcover")
+    if wc and wc.get("rows"):
+        rows = [["Land-cover class", "Share", "Estimated area"]]
+        for item in wc["rows"]:
+            rows.append([_safe_text(item["label"]), f"{item['fraction']:.1%}", f"{item['area_ha']:.2f} ha"])
+        story.extend([
+            Spacer(1, 6),
+            Paragraph("Land cover", styles["Heading3"]),
+            Paragraph("ESA WorldCover 2021 v200 classification at 10 m resolution for the mapped AOI pixels:", styles["BodyText"]),
+            Table(rows, colWidths=[75 * mm, 35 * mm, 50 * mm], repeatRows=1, style=TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ])),
+        ])
+    elif results.get("ndvi"):
+        nd = results["ndvi"]
+        area_ha = site.get("bbox_area_ha", 0.0) * nd.get("vegetated_fraction", 0.0)
+        story.extend([
+            Spacer(1, 6),
+            Paragraph("Vegetation", styles["Heading3"]),
+            Paragraph(_safe_text(f"NDVI-based vegetated fraction (NDVI > 0.3): {nd['vegetated_fraction']:.1%}, corresponding to approximately {area_ha:.2f} hectares of the selected footprint. This is vegetation extent, not a grass-only classification."), styles["BodyText"]),
+        ])
+
+    water = site.get("waterways")
+    if water:
+        story.extend([Spacer(1, 6), Paragraph("Rivers, waterways & surface water context", styles["Heading3"])])
+        if water.get("names"):
+            story.append(Paragraph(_safe_text("Named mapped water features returned by OpenStreetMap: " + ", ".join(water["names"]) + "."), styles["BodyText"]))
+        elif water.get("count"):
+            story.append(Paragraph(_safe_text(f"OpenStreetMap returned {water['count']} mapped water/waterway feature(s) in the selected bbox, but no names were returned."), styles["BodyText"]))
+        else:
+            story.append(Paragraph("OpenStreetMap returned no mapped river, stream, canal, drain or natural-water feature inside the selected bbox.", styles["BodyText"]))
+        wc_water = next((r for r in (wc or {}).get("rows", []) if r["class"] == 80), None)
+        if wc_water:
+            story.append(Paragraph(_safe_text(f"ESA WorldCover permanent-water class covers approximately {wc_water['area_ha']:.2f} hectares ({wc_water['fraction']:.1%}) of the mapped AOI pixels."), styles["BodyText"]))
+
+    if site.get("ndvi_vegetated_area_ha") is not None:
+        story.append(Paragraph(_safe_text(f"Sentinel-2 NDVI vegetation estimate: approximately {site['ndvi_vegetated_area_ha']:.2f} hectares above the configured NDVI threshold."), styles["BodyText"]))
+
+    if site.get("limitations"):
+        story.append(Paragraph("Site-intelligence limitations: " + _safe_text("; ".join(site["limitations"])), styles["BodyText"]))
+    return story
+
+
 def build_pdf(query: str, plan: Any, evidence: Any, results: dict[str, Any], preview_png: bytes | None = None) -> bytes:
     out = BytesIO()
     doc = SimpleDocTemplate(out, pagesize=A4, rightMargin=16 * mm, leftMargin=16 * mm, topMargin=14 * mm, bottomMargin=14 * mm)
@@ -70,11 +158,18 @@ def build_pdf(query: str, plan: Any, evidence: Any, results: dict[str, Any], pre
         Spacer(1, 8),
         Paragraph("Query", styles["Heading2"]),
         Paragraph(_safe_text(query), styles["BodyText"]),
+    ]
+
+    aoi = results.get("aoi")
+    if aoi and results.get("site_summary"):
+        story.extend(_site_summary_story(aoi, results, styles))
+
+    story.extend([
         Spacer(1, 6),
         Paragraph("Execution plan", styles["Heading2"]),
         Paragraph("Intents: " + _safe_text(", ".join(plan.intents)), styles["BodyText"]),
         Paragraph("Tools: " + _safe_text(", ".join(plan.tools)), styles["BodyText"]),
-    ]
+    ])
 
     steps = results.get("execution_steps", [])
     if steps:
@@ -99,7 +194,6 @@ def build_pdf(query: str, plan: Any, evidence: Any, results: dict[str, Any], pre
     sources = ", ".join(evidence.sources) if evidence.sources else "None"
     story.append(Paragraph("Sources: " + _safe_text(sources), styles["BodyText"]))
 
-    aoi = results.get("aoi")
     if aoi:
         bbox = aoi.get("bbox")
         bbox_text = ", ".join(f"{float(v):.6f}" for v in bbox) if bbox else "Unavailable"
