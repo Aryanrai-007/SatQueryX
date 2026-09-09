@@ -25,7 +25,7 @@ class AgenticOrchestrator:
         intents: list[str] = []
         if any(x in q for x in ("detect", "find", "identify", "object", "vehicle", "building", "road", "ship")):
             intents.append("visual_grounding")
-        if any(x in q for x in ("change", "changed", "compare", "comparison", "before", "after", "difference", "damage", "temporal")):
+        if any(x in q for x in ("change", "changed", "compare", "comparison", "compare the", "before", "after", "difference", "damage", "temporal")):
             intents.append("change_detection")
         if any(x in q for x in ("ndvi", "vegetation", "crop", "greenness", "health")):
             intents.append("ndvi")
@@ -33,7 +33,7 @@ class AgenticOrchestrator:
             intents.append("sar")
         if any(x in q for x in ("optical", "multispectral", "rgb")):
             intents.append("optical")
-        if any(x in q for x in ("fuse", "fusion", "combine optical", "combine sar")):
+        if any(x in q for x in ("fuse", "fusion", "combine optical", "combine sar")) or ("optical" in q and "sar" in q):
             intents.append("fusion")
         if not intents:
             intents.append("visual_question_answering")
@@ -61,8 +61,8 @@ class AgenticOrchestrator:
         errors: list[str] = []
         if not has_image:
             errors.append("At least one image is required.")
-        if "change_detection" in plan.tools and not has_second_image:
-            errors.append("Change detection requires a second temporally distinct image.")
+        if "change_detection" in plan.intents and not has_second_image:
+            errors.append("This query requests comparison/change analysis, which requires a second image.")
         if "optical_sar_fusion" in plan.tools and not has_second_image:
             errors.append("Optical/SAR fusion requires both optical and SAR inputs.")
         return errors
