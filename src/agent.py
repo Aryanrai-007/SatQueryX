@@ -21,13 +21,13 @@ class AgenticOrchestrator:
     """Deterministic planner that maps natural-language requests to real tools."""
 
     def classify_intent(self, query: str) -> list[str]:
-        q = query.lower().strip()
+        q = query.lower()
         intents: list[str] = []
         if any(x in q for x in ("detect", "find", "identify", "object", "vehicle", "building", "road", "ship")):
             intents.append("visual_grounding")
         if any(x in q for x in ("change", "changed", "compare", "comparison", "compare the", "before", "after", "difference", "damage", "temporal")):
             intents.append("change_detection")
-        if any(x in q for x in ("ndvi", "vegetation", "crop", "greenness", "health", "plant")):
+        if any(x in q for x in ("ndvi", "vegetation", "crop", "greenness", "health")):
             intents.append("ndvi")
         if any(x in q for x in ("sar", "radar", "backscatter", "microwave")):
             intents.append("sar")
@@ -35,18 +35,9 @@ class AgenticOrchestrator:
             intents.append("optical")
         if any(x in q for x in ("fuse", "fusion", "combine optical", "combine sar")) or ("optical" in q and "sar" in q):
             intents.append("fusion")
-
-        # "Analyze", "summarize", and similar broad requests should not collapse
-        # to metadata-only VQA. The app has a real 4-band Sentinel-2 path, so the
-        # planner requests NDVI as a concrete spectral result when appropriate.
-        broad = any(x in q for x in ("analyze", "analyse", "summary", "summarize", "overview", "assess", "assessment", "describe this area"))
-        if broad:
-            if "ndvi" not in intents:
-                intents.append("ndvi")
+        if not intents:
             intents.append("visual_question_answering")
-        elif not intents:
-            intents.append("visual_question_answering")
-        return list(dict.fromkeys(intents))
+        return intents
 
     def plan(self, query: str, has_second_image: bool = False) -> AnalysisPlan:
         intents = self.classify_intent(query)
@@ -61,7 +52,7 @@ class AgenticOrchestrator:
             tools.append("optical_sar_fusion")
         if "sar" in intents:
             tools.append("sar_statistics")
-        if "visual_question_answering" in intents:
+        if not tools or "visual_question_answering" in intents:
             tools.append("vlm_reasoning")
         return AnalysisPlan(intents=intents, tools=list(dict.fromkeys(tools)))
 
