@@ -21,6 +21,18 @@ def build_evidence(results: dict[str, Any]) -> EvidenceBundle:
     sources: list[str] = []
     confidences: list[float] = []
 
+    if "aoi" in results:
+        aoi = results["aoi"]
+        location = aoi.get("location") or "Unavailable"
+        scene = aoi.get("scene_id") or "Unavailable"
+        acquired = aoi.get("datetime") or "Unavailable"
+        cloud = aoi.get("cloud_cover")
+        cloud_text = f"{cloud}%" if cloud is not None else "Unavailable"
+        bbox = aoi.get("bbox")
+        bbox_text = ", ".join(f"{float(v):.6f}" for v in bbox) if bbox else "Unavailable"
+        facts.append(f"AOI location={location}; WGS84 bbox={bbox_text}; Sentinel-2 scene={scene}; acquisition={acquired}; cloud cover={cloud_text}; bands={','.join(aoi.get('bands', []))}; CRS={aoi.get('crs', 'Unavailable')}.")
+        sources.append("OpenStreetMap/Nominatim AOI context + Earth Search Sentinel-2 metadata")
+
     if "ndvi" in results:
         nd = results["ndvi"]
         facts.append(f"NDVI mean={nd['mean']:.4f}, median={nd['median']:.4f}, vegetated_fraction={nd['vegetated_fraction']:.2%} using the configured red/NIR bands.")
@@ -63,7 +75,6 @@ def synthesize_answer(query: str, evidence: EvidenceBundle, image: Image.Image |
     )
     if gemini.configured:
         return gemini.generate(prompt, [image] if image else []), "Gemini"
-
     if image is not None:
         try:
             vlm = RemoteSensingVLM()
