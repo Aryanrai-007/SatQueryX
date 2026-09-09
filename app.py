@@ -84,7 +84,7 @@ if run:
                 arr, _ = read_preview(primary_ds)
                 preview_image = Image.fromarray((rgb_preview(primary_ds) * 255).astype(np.uint8))
                 results["primary_info"] = info
-                steps.append(ExecutionStep("geospatial_validation", "success", f"CRS={info.crs}; {info.width}×{info.height}; {info.count} bands"))
+                steps.append(ExecutionStep("geospatial_validation", "success", f"CRS={info.crs}; {info.width}×{info.height}; {info.count} bands; resolution={info.resolution_x:g}×{info.resolution_y:g}"))
             else:
                 rgb = obj
                 preview_image = Image.fromarray(rgb)
@@ -101,7 +101,7 @@ if run:
                 ndvi = compute_ndvi(primary_ds, int(red_band), int(nir_band))
                 valid = np.isfinite(ndvi)
                 results["ndvi"] = {"array": ndvi, "mean": float(np.nanmean(ndvi)), "median": float(np.nanmedian(ndvi)), "vegetated_fraction": float(np.mean(ndvi[valid] > 0.3)) if valid.any() else 0.0}
-                steps.append(ExecutionStep("ndvi", "success", f"red={red_band}, nir={nir_band}"))
+                steps.append(ExecutionStep("ndvi", "success", f"red={red_band}, nir={nir_band}; mean={results['ndvi']['mean']:.4f}; vegetated_fraction={results['ndvi']['vegetated_fraction']:.2%}"))
 
             if "sar_statistics" in plan.tools:
                 sar_arr = arr[0]
@@ -117,8 +117,12 @@ if run:
                     validation = validate_geospatial(secondary_ds)
                     if validation:
                         raise ValueError("Secondary GeoTIFF validation failed: " + " ".join(validation))
+                    secondary_info = raster_info(secondary_ds, secondary.name)
+                    results["secondary_info"] = secondary_info
+                    steps.append(ExecutionStep("secondary_geospatial_validation", "success", f"CRS={secondary_info.crs}; {secondary_info.width}×{secondary_info.height}; {secondary_info.count} bands"))
                 else:
                     secondary_ds = None
+                    steps.append(ExecutionStep("secondary_image_ingestion", "success", f"{sobj.shape[1]}×{sobj.shape[0]} RGB image"))
 
                 if "change_detection" in plan.tools:
                     if primary_ds is None or secondary_ds is None:
@@ -127,7 +131,7 @@ if run:
                     after = reproject_to_reference(secondary_ds, primary_ds, 1)
                     ch = detect_change(before, after)
                     results["change_detection"] = {"difference": ch.difference, "heatmap": ch.normalized_heatmap, "mask": ch.threshold_mask, "changed_fraction": ch.changed_fraction, "mean_absolute_change": ch.mean_absolute_change, "ssim": ch.ssim}
-                    steps.append(ExecutionStep("change_detection", "success", f"changed_fraction={ch.changed_fraction:.2%}; SSIM={ch.ssim:.4f}"))
+                    steps.append(ExecutionStep("change_detection", "success", f"changed_fraction={ch.changed_fraction:.2%}; SSIM={ch.ssim:.4f}; mean_change={ch.mean_absolute_change:.4f}"))
 
                 if "optical_sar_fusion" in plan.tools:
                     if primary_ds is None or secondary_ds is None:
@@ -150,11 +154,14 @@ if run:
             results["answer"] = answer
             results["provider"] = provider
             steps.append(ExecutionStep("language_synthesis", "success", provider))
+            # Preserve the exact execution trace for the downloadable report.
+            results["execution_steps"] = list(steps)
             status.update(label="Analysis complete", state="complete", expanded=False)
 
         st.session_state["satquery_result"] = (query, plan, steps, results, evidence, preview_png)
     except Exception as exc:
         steps.append(ExecutionStep("analysis", "error", str(exc)))
+        results["execution_steps"] = list(steps)
         st.session_state["satquery_result"] = (query, plan, steps, results, None, preview_png)
         st.error(str(exc))
     finally:
@@ -184,6 +191,7 @@ if "satquery_result" in st.session_state:
         if "change_detection" in results0:
             st.markdown("### Change heatmap")
             st.image(results0["change_detection"]["heatmap"], clamp=True, caption="Computed normalized change intensity")
+            st.image(results0["change_detection"]["mask"], clamp=True, caption="Thresholded changed-pixel mask")
         if "detections" in results0:
             st.markdown("### Visual grounding")
             if preview0:
