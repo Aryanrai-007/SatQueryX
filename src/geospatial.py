@@ -72,11 +72,15 @@ def read_preview(ds, max_size: int = 1200) -> tuple[np.ndarray, dict]:
         resampling=Resampling.bilinear,
         masked=True,
     )
-    arr = np.ma.filled(arr, np.nan).astype(np.float32)
+    # Convert to floating point BEFORE filling masked integer rasters with NaN.
+    # np.ma.filled(..., np.nan) cannot insert NaN into uint16/int16 arrays.
+    arr = arr.astype(np.float32)
+    arr = np.ma.filled(arr, np.nan)
     return arr, {"width": out_w, "height": out_h}
 
 
 def normalize_band(band: np.ndarray, low: float | None = None, high: float | None = None) -> np.ndarray:
+    band = np.asarray(band, dtype=np.float32)
     valid = np.isfinite(band)
     if not valid.any():
         raise ValueError("Band contains no finite pixels.")
@@ -97,7 +101,14 @@ def rgb_preview(ds, rgb_bands: tuple[int, int, int] | None = None) -> np.ndarray
             gray, _ = read_preview(ds)
             g = normalize_band(gray[0])
             return np.dstack([g, g, g])
-    bands = [ds.read(i, out_shape=(min(1200, ds.height), min(1200, ds.width)), resampling=Resampling.bilinear).astype(np.float32) for i in rgb_bands]
+    bands = [
+        ds.read(
+            i,
+            out_shape=(min(1200, ds.height), min(1200, ds.width)),
+            resampling=Resampling.bilinear,
+        ).astype(np.float32)
+        for i in rgb_bands
+    ]
     return np.dstack([normalize_band(b) for b in bands])
 
 
