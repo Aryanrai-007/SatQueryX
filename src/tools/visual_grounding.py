@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 import os
-import tempfile
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 @dataclass
@@ -36,11 +34,21 @@ def run_yolo(image: Image.Image, model_path: str | None = None, confidence: floa
             continue
         for box in result.boxes:
             cls_id = int(box.cls.item())
-            detections.append(
-                Detection(
-                    label=str(names[cls_id]),
-                    confidence=float(box.conf.item()),
-                    xyxy=tuple(float(v) for v in box.xyxy[0].tolist()),
-                )
-            )
+            detections.append(Detection(str(names[cls_id]), float(box.conf.item()), tuple(float(v) for v in box.xyxy[0].tolist())))
     return detections
+
+
+def draw_detections(image: Image.Image, detections: list[Detection]) -> Image.Image:
+    """Draw only detector-produced boxes; never invents labels or boxes."""
+    out = image.copy().convert("RGB")
+    draw = ImageDraw.Draw(out)
+    width = max(2, out.width // 500)
+    for d in detections:
+        box = tuple(int(round(v)) for v in d.xyxy)
+        draw.rectangle(box, outline=(255, 255, 255), width=width)
+        label = f"{d.label} {d.confidence:.0%}"
+        y = max(0, box[1] - 18)
+        bbox = draw.textbbox((box[0], y), label)
+        draw.rectangle(bbox, fill=(0, 0, 0))
+        draw.text((box[0], y), label, fill=(255, 255, 255))
+    return out
