@@ -30,7 +30,10 @@ def build_evidence(results: dict[str, Any]) -> EvidenceBundle:
         cloud_text = f"{cloud}%" if cloud is not None else "Unavailable"
         bbox = aoi.get("bbox")
         bbox_text = ", ".join(f"{float(v):.6f}" for v in bbox) if bbox else "Unavailable"
-        facts.append(f"AOI location={location}; WGS84 bbox={bbox_text}; Sentinel-2 scene={scene}; acquisition={acquired}; cloud cover={cloud_text}; bands={','.join(aoi.get('bands', []))}; CRS={aoi.get('crs', 'Unavailable')}.")
+        platform = aoi.get("platform") or "Sentinel-2"
+        instruments = ",".join(aoi.get("instruments", [])) or "MSI"
+        tile = aoi.get("mgrs_tile") or "Unavailable"
+        facts.append(f"AOI location={location}; WGS84 bbox={bbox_text}; scene={scene}; acquisition={acquired}; platform={platform}; instrument={instruments}; MGRS tile={tile}; cloud cover={cloud_text}; bands={','.join(aoi.get('bands', []))}; CRS={aoi.get('crs', 'Unavailable')}.")
         sources.append("OpenStreetMap/Nominatim AOI context + Earth Search Sentinel-2 metadata")
 
     if "ndvi" in results:
