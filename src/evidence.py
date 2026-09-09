@@ -12,7 +12,7 @@ from .models.remote_vlm import RemoteSensingVLM
 @dataclass
 class EvidenceBundle:
     facts: list[str]
-    confidence: float
+    confidence: float | None
     sources: list[str]
 
 
@@ -46,19 +46,20 @@ def build_evidence(results: dict[str, Any]) -> EvidenceBundle:
         facts.append(f"SAR statistics: mean={s['mean']:.4f}, std={s['std']:.4f}, min={s['min']:.4f}, max={s['max']:.4f}.")
         sources.append("SAR raster statistics")
 
-    confidence = float(sum(confidences) / len(confidences)) if confidences else (0.75 if facts else 0.0)
-    return EvidenceBundle(facts=facts, confidence=max(0.0, min(1.0, confidence)), sources=sources)
+    confidence = float(sum(confidences) / len(confidences)) if confidences else None
+    return EvidenceBundle(facts=facts, confidence=confidence, sources=sources)
 
 
 def synthesize_answer(query: str, evidence: EvidenceBundle, image: Image.Image | None = None) -> tuple[str, str]:
     """Return answer + provider. If no provider is configured, fail rather than fabricate."""
     gemini = GeminiClient()
+    confidence_text = f"{evidence.confidence:.2f}" if evidence.confidence is not None else "not estimated"
     prompt = (
         "You are SatQueryX, a remote-sensing analysis assistant. Answer ONLY from the supplied evidence. "
         "Do not invent objects, locations, dates, sensor properties, or certainty. Clearly state limitations.\n\n"
         f"User query: {query}\n\n"
         "Computed evidence:\n- " + "\n- ".join(evidence.facts) +
-        f"\n\nEvidence confidence: {evidence.confidence:.2f}\nSources: {', '.join(evidence.sources)}"
+        f"\n\nDetector confidence (only when available): {confidence_text}\nSources: {', '.join(evidence.sources)}"
     )
     if gemini.configured:
         return gemini.generate(prompt, [image] if image else []), "Gemini"
