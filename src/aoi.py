@@ -10,8 +10,10 @@ import rasterio
 import requests
 from folium.plugins import Draw
 from rasterio.io import MemoryFile
+from rasterio.vrt import WarpedVRT
 from rasterio.windows import from_bounds
 from rasterio.warp import transform_bounds
+from rasterio.enums import Resampling
 from streamlit_folium import st_folium
 
 STAC_URL = "https://earth-search.aws.element84.com/v1"
@@ -21,9 +23,6 @@ APP_UA = "SatQueryX/0.1 (+https://github.com/Aryanrai-007/SatQueryX)"
 
 
 def build_aoi_map(center: tuple[float, float], zoom: int = 11, key: str = "satqueryx_aoi_map"):
-    # Two genuine basemap choices: street map for precise labels and satellite
-    # imagery for visual interpretation. The satellite layer is a basemap only;
-    # Sentinel-2 analysis still uses the selected STAC scene below.
     m = folium.Map(
         location=list(center),
         zoom_start=zoom,
@@ -50,7 +49,6 @@ def build_aoi_map(center: tuple[float, float], zoom: int = 11, key: str = "satqu
         max_zoom=19,
     ).add_to(m)
 
-    # Optional terrain/context basemap.
     folium.TileLayer(
         tiles="https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
         attr="© OpenTopoMap contributors",
@@ -136,7 +134,12 @@ def _stac_error(response: requests.Response) -> str:
     return response.text[:500] or f"HTTP {response.status_code}"
 
 
-def search_sentinel2(bbox: tuple[float, float, float, float], start: date, end: date, max_cloud: float = 20.0) -> list[dict[str, Any]]:
+def search_sentinel2(
+    bbox: tuple[float, float, float, float],
+    start: date,
+    end: date,
+    max_cloud: float = 20.0,
+) -> list[dict[str, Any]]:
     if start > end:
         raise ValueError("Start date must be before end date.")
     start_rfc3339 = f"{start.isoformat()}T00:00:00Z"
@@ -148,14 +151,30 @@ def search_sentinel2(bbox: tuple[float, float, float, float], start: date, end: 
         "limit": 50,
         "query": {"eo:cloud_cover": {"lte": float(max_cloud)}},
     }
-    response = requests.post(f"{STAC_URL}/search", json=payload, headers={"User-Agent": APP_UA}, timeout=25)
+    response = requests.post(
+        f"{STAC_URL}/search",
+        json=payload,
+        headers={"User-Agent": APP_UA},
+        timeout=25,
+    )
     if response.status_code == 400:
         payload.pop("query", None)
-        response = requests.post(f"{STAC_URL}/search", json=payload, headers={"User-Agent": APP_UA}, timeout=25)
+        response = requests.post(
+            f"{STAC_URL}/search",
+            json=payload,
+            headers={"User-Agent": APP_UA},
+            timeout=25,
+        )
     if not response.ok:
-        raise RuntimeError(f"Earth Search rejected the AOI search ({response.status_code}): {_stac_error(response)}")
+        raise RuntimeError(
+            f"Earth Search rejected the AOI search ({response.status_code}): {_stac_error(response)}"
+        )
     features = response.json().get("features", [])
-    return [item for item in features if float(item.get("properties", {}).get("eo:cloud_cover", 999)) <= max_cloud]
+    return [
+        item
+        for item in features
+        if float(item.get("properties", {}).get("eo:cloud_cover", 999)) <= max_cloud
+    ]
 
 
 def _asset_href(item: dict[str, Any], *names: str) -> str | None:
@@ -172,11 +191,21 @@ def _asset_available(item: dict[str, Any]) -> bool:
     if not href:
         return True
     try:
-        response = requests.head(href, headers={"User-Agent": APP_UA}, timeout=(5, 8), allow_redirects=True)
+        response = requests.head(
+            href,
+            headers={"User-Agent": APP_UA},
+            timeout=(5, 8),
+            allow_redirects=True,
+        )
         if response.status_code in {200, 206}:
             return True
         if response.status_code in {403, 405, 501}:
-            response = requests.get(href, headers={"User-Agent": APP_UA, "Range": "bytes=0-0"}, timeout=(5, 8), stream=True)
+            response = requests.get(
+                href,
+                headers={"User-Agent": APP_UA, "Range": "bytes=0-0"},
+                timeout=(5, 8),
+                stream=True,
+            )
             return response.status_code in {200, 206}
     except requests.RequestException:
         return False
@@ -184,6 +213,13 @@ def _asset_available(item: dict[str, Any]) -> bool:
 
 
 def _clip_asset(href: str, bbox: tuple[float, float, float, float]) -> np.ndarray:
+    """Read an AOI from a remote Sentinel-2 COG in a stable WGS84 grid.
+
+    Some remote assets expose incomplete/native transform metadata through the
+    HTTP/COG path. WarpedVRT gives rasterio an explicit destination transform,
+    so from_bounds never receives a missing transform and the AOI remains
+    geospatially correct.
+    """
     with rasterio.Env(
         GDAL_HTTP_USERAGENT=APP_UA,
         GDAL_HTTP_MULTIRANGE="SERIAL",
@@ -194,16 +230,51 @@ def _clip_asset(href: str, bbox: tuple[float, float, float, float]) -> np.ndarra
         CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
     ):
         with rasterio.open(f"/vsicurl/{href}") as ds:
-            source_bbox = transform_bounds("EPSG:4326", ds.crs, *bbox, densify_pts=21)
-            window = from_bounds(*source_bbox, transform=ds.transform)
-            window = window.round_offsets().round_lengths()
-            window = window.intersection(rasterio.windows.Window(0, 0, ds.width, ds.height))
-            if window.width <= 0 or window.height <= 0:
+            if ds.crs is None:
+                raise RuntimeError("Sentinel-2 asset has no CRS metadata; cannot safely clip the AOI.")
+
+            # First transform the AOI into the source CRS only to test overlap.
+            source_bbox = transform_bounds(
+                "EPSG:4326", ds.crs, *bbox, densify_pts=21
+            )
+            if (
+                source_bbox[2] <= ds.bounds.left
+                or source_bbox[0] >= ds.bounds.right
+                or source_bbox[3] <= ds.bounds.bottom
+                or source_bbox[1] >= ds.bounds.top
+            ):
                 raise ValueError("Selected AOI does not overlap the satellite raster.")
-            return ds.read(1, window=window, out_dtype="float32")
+
+            # Reproject on-the-fly into WGS84. This supplies a concrete affine
+            # transform even when the source COG's transform is not exposed
+            # correctly by the remote filesystem layer.
+            vrt_width = max(1, int(round((bbox[2] - bbox[0]) * 111_320 / 10.0)))
+            vrt_height = max(1, int(round((bbox[3] - bbox[1]) * 110_540 / 10.0)))
+            vrt_width = min(vrt_width, 2048)
+            vrt_height = min(vrt_height, 2048)
+            with WarpedVRT(
+                ds,
+                crs="EPSG:4326",
+                transform=rasterio.transform.from_bounds(
+                    *bbox, vrt_width, vrt_height
+                ),
+                width=vrt_width,
+                height=vrt_height,
+                resampling=Resampling.bilinear,
+            ) as vrt:
+                window = from_bounds(*bbox, transform=vrt.transform)
+                window = window.round_offsets().round_lengths()
+                window = window.intersection(
+                    rasterio.windows.Window(0, 0, vrt.width, vrt.height)
+                )
+                if window.width <= 0 or window.height <= 0:
+                    raise ValueError("Selected AOI does not overlap the satellite raster.")
+                return vrt.read(1, window=window, out_dtype="float32")
 
 
-def fetch_sentinel2_snippet(item: dict[str, Any], bbox: tuple[float, float, float, float]) -> tuple[bytes, dict[str, Any]]:
+def fetch_sentinel2_snippet(
+    item: dict[str, Any], bbox: tuple[float, float, float, float]
+) -> tuple[bytes, dict[str, Any]]:
     hrefs = {
         "B02": _asset_href(item, "blue", "B02"),
         "B03": _asset_href(item, "green", "B03"),
@@ -212,11 +283,15 @@ def fetch_sentinel2_snippet(item: dict[str, Any], bbox: tuple[float, float, floa
     }
     missing = [band for band, href in hrefs.items() if not href]
     if missing:
-        raise RuntimeError(f"Selected Sentinel-2 scene is missing required COG assets: {', '.join(missing)}")
+        raise RuntimeError(
+            f"Selected Sentinel-2 scene is missing required COG assets: {', '.join(missing)}"
+        )
+
     arrays = [_clip_asset(hrefs[band], bbox) for band in ("B02", "B03", "B04", "B08")]
     shapes = {a.shape for a in arrays}
     if len(shapes) != 1:
         raise RuntimeError("Sentinel-2 band windows do not align exactly for the selected AOI.")
+
     profile = {
         "driver": "GTiff",
         "height": arrays[0].shape[0],
@@ -224,7 +299,9 @@ def fetch_sentinel2_snippet(item: dict[str, Any], bbox: tuple[float, float, floa
         "count": 4,
         "dtype": "float32",
         "crs": "EPSG:4326",
-        "transform": from_bounds(*bbox, arrays[0].shape[1], arrays[0].shape[0]),
+        "transform": rasterio.transform.from_bounds(
+            *bbox, arrays[0].shape[1], arrays[0].shape[0]
+        ),
         "compress": "deflate",
     }
     out = BytesIO()
@@ -233,6 +310,7 @@ def fetch_sentinel2_snippet(item: dict[str, Any], bbox: tuple[float, float, floa
             for idx, arr in enumerate(arrays, start=1):
                 dst.write(arr, idx)
         out.write(mem.read())
+
     props = item.get("properties", {})
     metadata = {
         "scene_id": item.get("id"),
@@ -251,8 +329,14 @@ def fetch_sentinel2_snippet(item: dict[str, Any], bbox: tuple[float, float, floa
     return out.getvalue(), metadata
 
 
-def select_items(features: list[dict[str, Any]], count: int = 1, min_gap_days: int = 14) -> list[dict[str, Any]]:
-    ordered = sorted(features, key=lambda item: item.get("properties", {}).get("datetime") or "", reverse=True)
+def select_items(
+    features: list[dict[str, Any]], count: int = 1, min_gap_days: int = 14
+) -> list[dict[str, Any]]:
+    ordered = sorted(
+        features,
+        key=lambda item: item.get("properties", {}).get("datetime") or "",
+        reverse=True,
+    )
     reachable = [item for item in ordered if _asset_available(item)]
     if not reachable:
         reachable = ordered
@@ -267,7 +351,13 @@ def select_items(features: list[dict[str, Any]], count: int = 1, min_gap_days: i
             current = item.get("properties", {}).get("datetime")
             if first and current:
                 from datetime import datetime
-                delta = abs((datetime.fromisoformat(first.replace("Z", "+00:00")) - datetime.fromisoformat(current.replace("Z", "+00:00"))).days)
+
+                delta = abs(
+                    (
+                        datetime.fromisoformat(first.replace("Z", "+00:00"))
+                        - datetime.fromisoformat(current.replace("Z", "+00:00"))
+                    ).days
+                )
                 if delta >= min_gap_days:
                     selected.append(item)
                     break
