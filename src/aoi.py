@@ -24,7 +24,7 @@ def build_aoi_map(center: tuple[float, float], zoom: int = 11, key: str = "satqu
     m = folium.Map(
         location=list(center),
         zoom_start=zoom,
-        tiles="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        tiles="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
         attr="© OpenStreetMap contributors",
         control_scale=True,
         prefer_canvas=True,
@@ -32,24 +32,11 @@ def build_aoi_map(center: tuple[float, float], zoom: int = 11, key: str = "satqu
     Draw(
         export=False,
         position="topleft",
-        draw_options={
-            "polyline": False,
-            "polygon": True,
-            "rectangle": True,
-            "circle": False,
-            "circlemarker": False,
-            "marker": False,
-        },
+        draw_options={"polyline": False, "polygon": True, "rectangle": True, "circle": False, "circlemarker": False, "marker": False},
         edit_options={"edit": True, "remove": True},
     ).add_to(m)
     folium.LayerControl(collapsed=True).add_to(m)
-    return st_folium(
-        m,
-        height=520,
-        use_container_width=True,
-        key=key,
-        returned_objects=["last_active_drawing", "all_drawings", "center", "zoom"],
-    )
+    return st_folium(m, height=520, use_container_width=True, key=key, returned_objects=["last_active_drawing", "all_drawings", "center", "zoom"])
 
 
 def geometry_from_drawing(drawing: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -63,14 +50,12 @@ def geometry_from_drawing(drawing: dict[str, Any] | None) -> dict[str, Any] | No
 
 def geometry_bbox(geometry: dict[str, Any]) -> tuple[float, float, float, float]:
     coords = geometry.get("coordinates", [])
-
     def points(value):
         if value and isinstance(value[0], (int, float)):
             yield value
         else:
             for child in value:
                 yield from points(child)
-
     pts = list(points(coords))
     if not pts:
         raise ValueError("The selected area contains no coordinates.")
@@ -85,24 +70,13 @@ def bbox_center(bbox: tuple[float, float, float, float]) -> tuple[float, float]:
 
 
 def reverse_geocode(lat: float, lon: float) -> str:
-    response = requests.get(
-        NOMINATIM_URL,
-        params={"lat": lat, "lon": lon, "format": "jsonv2", "zoom": 10},
-        headers={"User-Agent": APP_UA},
-        timeout=15,
-    )
+    response = requests.get(NOMINATIM_URL, params={"lat": lat, "lon": lon, "format": "jsonv2", "zoom": 10}, headers={"User-Agent": APP_UA}, timeout=15)
     response.raise_for_status()
     data = response.json()
     return str(data.get("display_name") or "Location name unavailable")
 
 
-def search_sentinel2(
-    bbox: tuple[float, float, float, float],
-    start_date: date,
-    end_date: date,
-    max_cloud: float = 15.0,
-    limit: int = 12,
-) -> list[dict[str, Any]]:
+def search_sentinel2(bbox: tuple[float, float, float, float], start_date: date, end_date: date, max_cloud: float = 15.0, limit: int = 12) -> list[dict[str, Any]]:
     payload = {
         "collections": [S2_COLLECTION],
         "bbox": list(bbox),
@@ -111,55 +85,36 @@ def search_sentinel2(
         "limit": int(limit),
         "sortby": [{"field": "properties.datetime", "direction": "desc"}],
     }
-    response = requests.post(
-        f"{STAC_URL}/search",
-        json=payload,
-        headers={"User-Agent": APP_UA, "Accept": "application/geo+json"},
-        timeout=30,
-    )
+    response = requests.post(f"{STAC_URL}/search", json=payload, headers={"User-Agent": APP_UA, "Accept": "application/geo+json"}, timeout=30)
     response.raise_for_status()
-    features = response.json().get("features", [])
-    return features
+    return response.json().get("features", [])
 
 
 def _asset_href(item: dict[str, Any], *names: str) -> str:
     assets = item.get("assets", {})
     lowered = {str(k).lower(): v for k, v in assets.items()}
     for name in names:
-        if name.lower() in lowered:
-            href = lowered[name.lower()].get("href")
-            if href:
-                return href
+        if name.lower() in lowered and lowered[name.lower()].get("href"):
+            return lowered[name.lower()]["href"]
     for key, asset in assets.items():
         key_l = str(key).lower()
-        if any(name.lower() in key_l for name in names):
-            href = asset.get("href")
-            if href:
-                return href
+        if any(name.lower() in key_l for name in names) and asset.get("href"):
+            return asset["href"]
     raise KeyError(f"Could not find any of the requested assets: {names}")
 
 
 def _clip_asset(url: str, bbox: tuple[float, float, float, float], max_dimension: int = 4096):
-    with rasterio.Env(
-        GDAL_HTTP_USERAGENT=APP_UA,
-        GDAL_HTTP_MULTIRANGE="YES",
-        CPL_VSIL_CURL_USE_HEAD="NO",
-    ):
+    with rasterio.Env(GDAL_HTTP_USERAGENT=APP_UA, GDAL_HTTP_MULTIRANGE="YES", CPL_VSIL_CURL_USE_HEAD="NO"):
         with rasterio.open(url) as src:
             left, bottom, right, top = transform_bounds("EPSG:4326", src.crs, *bbox, densify_pts=21)
-            left = max(left, src.bounds.left)
-            right = min(right, src.bounds.right)
-            bottom = max(bottom, src.bounds.bottom)
-            top = min(top, src.bounds.top)
+            left, right = max(left, src.bounds.left), min(right, src.bounds.right)
+            bottom, top = max(bottom, src.bounds.bottom), min(top, src.bounds.top)
             if left >= right or bottom >= top:
                 raise ValueError("The selected AOI does not overlap the selected satellite scene.")
-            window = from_bounds(left, bottom, right, top, transform=src.transform)
-            window = window.round_offsets().round_lengths()
-            width = max(1, int(window.width))
-            height = max(1, int(window.height))
+            window = from_bounds(left, bottom, right, top, transform=src.transform).round_offsets().round_lengths()
+            width, height = max(1, int(window.width)), max(1, int(window.height))
             scale = min(1.0, max_dimension / max(width, height))
-            out_width = max(1, int(width * scale))
-            out_height = max(1, int(height * scale))
+            out_width, out_height = max(1, int(width * scale)), max(1, int(height * scale))
             data = src.read(1, window=window, out_shape=(out_height, out_width), resampling=rasterio.enums.Resampling.bilinear)
             transform = src.window_transform(window)
             if scale != 1.0:
@@ -167,17 +122,8 @@ def _clip_asset(url: str, bbox: tuple[float, float, float, float], max_dimension
             return data.astype(np.float32), transform, src.crs
 
 
-def fetch_sentinel2_snippet(
-    item: dict[str, Any],
-    bbox: tuple[float, float, float, float],
-    max_dimension: int = 4096,
-) -> tuple[bytes, dict[str, Any]]:
-    bands = [
-        ("blue", ("blue", "b02")),
-        ("green", ("green", "b03")),
-        ("red", ("red", "b04")),
-        ("nir", ("nir", "b08")),
-    ]
+def fetch_sentinel2_snippet(item: dict[str, Any], bbox: tuple[float, float, float, float], max_dimension: int = 4096) -> tuple[bytes, dict[str, Any]]:
+    bands = [("blue", ("blue", "b02")), ("green", ("green", "b03")), ("red", ("red", "b04")), ("nir", ("nir", "b08"))]
     arrays = []
     transform = None
     crs = None
@@ -189,20 +135,8 @@ def fetch_sentinel2_snippet(
         elif array.shape != arrays[0].shape:
             raise ValueError("Sentinel-2 band windows have incompatible shapes.")
         arrays.append(array)
-
     stack = np.stack(arrays).astype(np.uint16)
-    profile = {
-        "driver": "GTiff",
-        "height": stack.shape[1],
-        "width": stack.shape[2],
-        "count": 4,
-        "dtype": "uint16",
-        "crs": crs,
-        "transform": transform,
-        "compress": "deflate",
-        "tiled": True,
-        "BIGTIFF": "IF_SAFER",
-    }
+    profile = {"driver": "GTiff", "height": stack.shape[1], "width": stack.shape[2], "count": 4, "dtype": "uint16", "crs": crs, "transform": transform, "compress": "deflate", "tiled": True, "BIGTIFF": "IF_SAFER"}
     output = BytesIO()
     with MemoryFile() as mem:
         with mem.open(**profile) as dst:
@@ -212,7 +146,6 @@ def fetch_sentinel2_snippet(
             dst.set_band_description(3, "Red (B04)")
             dst.set_band_description(4, "NIR (B08)")
         output.write(mem.read())
-
     props = item.get("properties", {})
     metadata = {
         "scene_id": item.get("id", "unknown"),
@@ -230,20 +163,12 @@ def fetch_sentinel2_snippet(
 def select_items(features: list[dict[str, Any]], count: int = 2, min_gap_days: int = 14) -> list[dict[str, Any]]:
     if not features:
         return []
-    parsed = []
-    for feature in features:
-        value = feature.get("properties", {}).get("datetime")
-        if value:
-            parsed.append((value, feature))
+    parsed = [(f.get("properties", {}).get("datetime"), f) for f in features if f.get("properties", {}).get("datetime")]
     parsed.sort(key=lambda x: x[0], reverse=True)
     selected = [parsed[0][1]]
-    first_dt = parsed[0][0][:10]
-    first_date = date.fromisoformat(first_dt)
-    for _, feature in parsed[1:]:
-        dt = feature.get("properties", {}).get("datetime", "")[:10]
-        if not dt:
-            continue
-        if abs((first_date - date.fromisoformat(dt)).days) >= min_gap_days:
+    first_date = date.fromisoformat(parsed[0][0][:10])
+    for value, feature in parsed[1:]:
+        if abs((first_date - date.fromisoformat(value[:10])).days) >= min_gap_days:
             selected.append(feature)
             break
     return selected[:count]
