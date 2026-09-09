@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 
 @dataclass
@@ -19,14 +18,14 @@ class AnalysisPlan:
 
 
 class AgenticOrchestrator:
-    """Deterministic planner: selects real tools from the user's request."""
+    """Deterministic planner that maps natural-language requests to real tools."""
 
     def classify_intent(self, query: str) -> list[str]:
         q = query.lower()
         intents: list[str] = []
         if any(x in q for x in ("detect", "find", "identify", "object", "vehicle", "building", "road", "ship")):
             intents.append("visual_grounding")
-        if any(x in q for x in ("change", "changed", "before", "after", "difference", "damage")):
+        if any(x in q for x in ("change", "changed", "compare", "comparison", "before", "after", "difference", "damage", "temporal")):
             intents.append("change_detection")
         if any(x in q for x in ("ndvi", "vegetation", "crop", "greenness", "health")):
             intents.append("ndvi")
