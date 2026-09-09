@@ -73,7 +73,7 @@ def _site_summary_story(aoi: dict[str, Any], results: dict[str, Any], styles: An
         Paragraph(
             _safe_text(
                 f"The selected area is {location}. Its selected WGS84 bounding-box footprint is approximately "
-                f"{area:.2f} hectares. The summary below combines the Sentinel-2 analysis with independent "
+                f"{area:.2f} hectares. The summary combines Sentinel-2 evidence with independent "
                 f"Copernicus DEM, ESA WorldCover and OpenStreetMap context; values are reported only when the "
                 f"corresponding source was successfully retrieved."
             ),
@@ -88,19 +88,19 @@ def _site_summary_story(aoi: dict[str, Any], results: dict[str, Any], styles: An
             Paragraph("Terrain / elevation", styles["Heading3"]),
             _metadata_table([
                 ["Property", "Value"],
-                ["Elevation source", _safe_text(e.get("source", "Copernicus DEM GLO-30"))],
-                ["Elevation model", _safe_text(e.get("model", "Digital Surface Model"))],
-                ["Mean surface elevation", f"{e['mean_m']:.1f} m"],
-                ["Median surface elevation", f"{e['median_m']:.1f} m"],
+                ["Elevation source", _safe_text(e.get("source", "Unavailable"))],
+                ["Elevation model", _safe_text(e.get("model", "Unavailable"))],
+                ["Mean elevation", f"{e['mean_m']:.1f} m"],
+                ["Median elevation", f"{e['median_m']:.1f} m"],
                 ["Minimum / maximum", f"{e['min_m']:.1f} m / {e['max_m']:.1f} m"],
                 ["Relief across sampled AOI", f"{e['relief_m']:.1f} m"],
-                ["Valid elevation samples", str(e.get("samples", "Unavailable"))],
+                ["Valid elevation samples / cells", str(e.get("samples", "Unavailable"))],
             ]),
-            Paragraph(
-                "Elevation is a surface-elevation (DSM) measurement, so buildings and vegetation can contribute to the measured surface height.",
-                styles["BodyText"],
-            ),
         ])
+        if "DSM" in str(e.get("model", "")).upper():
+            story.append(Paragraph("Copernicus DEM is a digital surface model: buildings, infrastructure and vegetation can contribute to the measured surface height.", styles["BodyText"]))
+        else:
+            story.append(Paragraph("Elevation is reported from the named elevation model; it should not be interpreted as building height or bare-earth elevation unless the source explicitly provides that product.", styles["BodyText"]))
 
     wc = site.get("worldcover")
     if wc and wc.get("rows"):
@@ -110,7 +110,7 @@ def _site_summary_story(aoi: dict[str, Any], results: dict[str, Any], styles: An
         story.extend([
             Spacer(1, 6),
             Paragraph("Land cover", styles["Heading3"]),
-            Paragraph("ESA WorldCover 2021 v200 classification at 10 m resolution for the mapped AOI pixels:", styles["BodyText"]),
+            Paragraph("ESA WorldCover 2021 v200 classification at 10 m resolution. Areas are proportional estimates for the AOI footprint from the mapped pixels; this is a land-cover product, not a pixel-perfect cadastral survey:", styles["BodyText"]),
             Table(rows, colWidths=[75 * mm, 35 * mm, 50 * mm], repeatRows=1, style=TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
                 ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
@@ -129,13 +129,15 @@ def _site_summary_story(aoi: dict[str, Any], results: dict[str, Any], styles: An
 
     water = site.get("waterways")
     if water:
-        story.extend([Spacer(1, 6), Paragraph("Rivers, waterways & surface water context", styles["Heading3"])])
+        story.extend([Spacer(1, 6), Paragraph("Rivers, waterways & surface-water context", styles["Heading3"])])
         if water.get("names"):
-            story.append(Paragraph(_safe_text("Named mapped water features returned by OpenStreetMap: " + ", ".join(water["names"]) + "."), styles["BodyText"]))
+            story.append(Paragraph(_safe_text("Named mapped water features returned by OpenStreetMap in the queried context area: " + ", ".join(water["names"]) + "."), styles["BodyText"]))
         elif water.get("count"):
-            story.append(Paragraph(_safe_text(f"OpenStreetMap returned {water['count']} mapped water/waterway feature(s) in the selected bbox, but no names were returned."), styles["BodyText"]))
+            radius = water.get("context_radius_degrees")
+            context = f"within approximately {radius}° of the AOI bbox" if radius else "in the queried AOI/context bbox"
+            story.append(Paragraph(_safe_text(f"OpenStreetMap returned {water['count']} mapped water/waterway feature(s) {context}, but no names were returned."), styles["BodyText"]))
         else:
-            story.append(Paragraph("OpenStreetMap returned no mapped river, stream, canal, drain or natural-water feature inside the selected bbox.", styles["BodyText"]))
+            story.append(Paragraph("OpenStreetMap returned no mapped river, stream, canal, drain or natural-water feature in the queried AOI/context area.", styles["BodyText"]))
         wc_water = next((r for r in (wc or {}).get("rows", []) if r["class"] == 80), None)
         if wc_water:
             story.append(Paragraph(_safe_text(f"ESA WorldCover permanent-water class covers approximately {wc_water['area_ha']:.2f} hectares ({wc_water['fraction']:.1%}) of the mapped AOI pixels."), styles["BodyText"]))
