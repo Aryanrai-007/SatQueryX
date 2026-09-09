@@ -18,9 +18,7 @@ from src.tools.visual_grounding import draw_detections, run_yolo
 
 load_dotenv()
 st.set_page_config(page_title="SatQueryX", page_icon="🛰️", layout="wide")
-st.markdown("""
-<style>.block-container {max-width: 1450px; padding-top: 1.5rem;}</style>
-""", unsafe_allow_html=True)
+st.markdown("""<style>.block-container {max-width: 1450px; padding-top: 1.5rem;}</style>""", unsafe_allow_html=True)
 
 st.title("🛰️ SatQueryX")
 st.caption("Interactive Vision-Language Assistant for Multimodal Remote Sensing Image Analysis through Text Queries")
@@ -188,9 +186,9 @@ if "satquery_result" in st.session_state:
             st.image(results0["change_detection"]["heatmap"], clamp=True, caption="Computed normalized change intensity")
         if "detections" in results0:
             st.markdown("### Visual grounding")
-            annotated = draw_detections(preview_image if preview_image else Image.open(BytesIO(preview0)), results0["detections"]) if preview0 else None
-            if annotated:
-                st.image(annotated, caption="Detector-produced bounding boxes")
+            if preview0:
+                base_image = Image.open(BytesIO(preview0)).convert("RGB")
+                st.image(draw_detections(base_image, results0["detections"]), caption="Detector-produced bounding boxes")
             if results0["detections"]:
                 for d in results0["detections"]:
                     st.write(f"**{d.label}** · {d.confidence:.1%} · box={tuple(round(x, 1) for x in d.xyxy)}")
