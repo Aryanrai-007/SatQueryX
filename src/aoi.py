@@ -21,14 +21,47 @@ APP_UA = "SatQueryX/0.1 (+https://github.com/Aryanrai-007/SatQueryX)"
 
 
 def build_aoi_map(center: tuple[float, float], zoom: int = 11, key: str = "satqueryx_aoi_map"):
+    # Two genuine basemap choices: street map for precise labels and satellite
+    # imagery for visual interpretation. The satellite layer is a basemap only;
+    # Sentinel-2 analysis still uses the selected STAC scene below.
     m = folium.Map(
         location=list(center),
         zoom_start=zoom,
-        tiles="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-        attr="© OpenStreetMap contributors",
+        tiles=None,
         control_scale=True,
         prefer_canvas=True,
     )
+
+    folium.TileLayer(
+        tiles="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+        attr="© OpenStreetMap contributors",
+        name="🗺️ Street map",
+        overlay=False,
+        control=True,
+        max_zoom=19,
+    ).add_to(m)
+
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+        name="🛰️ Satellite imagery",
+        overlay=False,
+        control=True,
+        max_zoom=19,
+    ).add_to(m)
+
+    # Optional terrain/context basemap.
+    folium.TileLayer(
+        tiles="https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+        attr="© OpenTopoMap contributors",
+        name="⛰️ Topographic",
+        overlay=False,
+        control=True,
+        max_zoom=17,
+    ).add_to(m)
+
+    folium.LayerControl(position="topright", collapsed=False).add_to(m)
+
     Draw(
         export=False,
         position="topleft",
@@ -100,112 +133,57 @@ def _stac_error(response: requests.Response) -> str:
             return str(detail)
     except ValueError:
         pass
-    text = response.text.strip()
-    return text[:500] if text else f"HTTP {response.status_code}"
+    return response.text[:500] or f"HTTP {response.status_code}"
 
 
-def search_sentinel2(
-    bbox: tuple[float, float, float, float],
-    start_date: date,
-    end_date: date,
-    max_cloud: float = 15.0,
-    limit: int = 12,
-) -> list[dict[str, Any]]:
-    if start_date > end_date:
-        raise ValueError("Search start date must be on or before the search end date.")
-
-    url = f"{STAC_URL}/search"
-    headers = {"User-Agent": APP_UA, "Accept": "application/geo+json"}
-    # STAC datetime is RFC3339, not date-only ISO-8601.
-    start_ts = f"{start_date.isoformat()}T00:00:00Z"
-    end_ts = f"{end_date.isoformat()}T23:59:59Z"
-    base_payload = {
+def search_sentinel2(bbox: tuple[float, float, float, float], start: date, end: date, max_cloud: float = 20.0) -> list[dict[str, Any]]:
+    if start > end:
+        raise ValueError("Start date must be before end date.")
+    start_rfc3339 = f"{start.isoformat()}T00:00:00Z"
+    end_rfc3339 = f"{end.isoformat()}T23:59:59Z"
+    payload = {
         "collections": [S2_COLLECTION],
         "bbox": list(bbox),
-        "datetime": f"{start_ts}/{end_ts}",
-        "limit": int(limit),
-    }
-    filtered_payload = {
-        **base_payload,
+        "datetime": f"{start_rfc3339}/{end_rfc3339}",
+        "limit": 50,
         "query": {"eo:cloud_cover": {"lte": float(max_cloud)}},
     }
-    response = requests.post(url, json=filtered_payload, headers=headers, timeout=30)
-
+    response = requests.post(f"{STAC_URL}/search", json=payload, headers={"User-Agent": APP_UA}, timeout=25)
     if response.status_code == 400:
-        fallback = requests.post(url, json=base_payload, headers=headers, timeout=30)
-        if fallback.ok:
-            features = fallback.json().get("features", [])
-            return [
-                feature
-                for feature in features
-                if float(feature.get("properties", {}).get("eo:cloud_cover", 101.0)) <= float(max_cloud)
-            ]
-        raise RuntimeError(f"Earth Search rejected the AOI search ({fallback.status_code}): {_stac_error(fallback)}")
-
+        payload.pop("query", None)
+        response = requests.post(f"{STAC_URL}/search", json=payload, headers={"User-Agent": APP_UA}, timeout=25)
     if not response.ok:
         raise RuntimeError(f"Earth Search rejected the AOI search ({response.status_code}): {_stac_error(response)}")
-    return response.json().get("features", [])
+    features = response.json().get("features", [])
+    return [item for item in features if float(item.get("properties", {}).get("eo:cloud_cover", 999)) <= max_cloud]
 
 
-def _asset_href(item: dict[str, Any], *names: str) -> str:
+def _asset_href(item: dict[str, Any], *names: str) -> str | None:
     assets = item.get("assets", {})
-    lowered = {str(k).lower(): v for k, v in assets.items()}
     for name in names:
-        if name.lower() in lowered and lowered[name.lower()].get("href"):
-            return lowered[name.lower()]["href"]
-    for key, asset in assets.items():
-        key_l = str(key).lower()
-        if any(name.lower() in key_l for name in names) and asset.get("href"):
-            return asset["href"]
-    raise KeyError(f"Could not find any of the requested assets: {names}")
+        href = assets.get(name, {}).get("href")
+        if href:
+            return href
+    return None
 
 
 def _asset_available(item: dict[str, Any]) -> bool:
-    """Probe a representative 10 m COG before selecting a scene.
-
-    Earth Search can expose metadata before every referenced COG is reachable.
-    A lightweight HEAD/range probe lets SatQueryX skip such scenes instead of
-    failing the entire AOI workflow on a 404 during rasterio's first read.
-    """
+    href = _asset_href(item, "red", "B04", "visual")
+    if not href:
+        return True
     try:
-        href = _asset_href(item, "red", "b04")
-    except KeyError:
-        return False
-
-    try:
-        response = requests.head(
-            href,
-            headers={"User-Agent": APP_UA},
-            allow_redirects=True,
-            timeout=12,
-        )
+        response = requests.head(href, headers={"User-Agent": APP_UA}, timeout=(5, 8), allow_redirects=True)
         if response.status_code in {200, 206}:
             return True
-        if response.status_code not in {403, 405}:
-            return False
-    except requests.RequestException:
-        pass
-
-    try:
-        response = requests.get(
-            href,
-            headers={"User-Agent": APP_UA, "Range": "bytes=0-0"},
-            stream=True,
-            allow_redirects=True,
-            timeout=12,
-        )
-        ok = response.status_code in {200, 206}
-        response.close()
-        return ok
+        if response.status_code in {403, 405, 501}:
+            response = requests.get(href, headers={"User-Agent": APP_UA, "Range": "bytes=0-0"}, timeout=(5, 8), stream=True)
+            return response.status_code in {200, 206}
     except requests.RequestException:
         return False
+    return False
 
 
-def _clip_asset(url: str, bbox: tuple[float, float, float, float], max_dimension: int = 4096):
-    # Explicit /vsicurl/ makes the intended remote, range-readable COG path
-    # unambiguous to GDAL. SERIAL multi-range mode is conservative for S3 and
-    # avoids relying on a proxy to support multipart Range responses.
-    vsi_url = url if url.startswith("/vsicurl/") else f"/vsicurl/{url}"
+def _clip_asset(href: str, bbox: tuple[float, float, float, float]) -> np.ndarray:
     with rasterio.Env(
         GDAL_HTTP_USERAGENT=APP_UA,
         GDAL_HTTP_MULTIRANGE="SERIAL",
@@ -215,132 +193,87 @@ def _clip_asset(url: str, bbox: tuple[float, float, float, float], max_dimension
         GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
         CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
     ):
-        with rasterio.open(vsi_url) as src:
-            left, bottom, right, top = transform_bounds(
-                "EPSG:4326", src.crs, *bbox, densify_pts=21
-            )
-            left, right = max(left, src.bounds.left), min(right, src.bounds.right)
-            bottom, top = max(bottom, src.bounds.bottom), min(top, src.bounds.top)
-            if left >= right or bottom >= top:
-                raise ValueError("The selected AOI does not overlap the selected satellite scene.")
-            window = from_bounds(left, bottom, right, top, transform=src.transform).round_offsets().round_lengths()
-            width, height = max(1, int(window.width)), max(1, int(window.height))
-            scale = min(1.0, max_dimension / max(width, height))
-            out_width, out_height = max(1, int(width * scale)), max(1, int(height * scale))
-            data = src.read(
-                1,
-                window=window,
-                out_shape=(out_height, out_width),
-                resampling=rasterio.enums.Resampling.bilinear,
-            )
-            transform = src.window_transform(window)
-            if scale != 1.0:
-                transform = transform * rasterio.Affine.scale(width / out_width, height / out_height)
-            return data.astype(np.float32), transform, src.crs
+        with rasterio.open(f"/vsicurl/{href}") as ds:
+            source_bbox = transform_bounds("EPSG:4326", ds.crs, *bbox, densify_pts=21)
+            window = from_bounds(*source_bbox, transform=ds.transform)
+            window = window.round_offsets().round_lengths()
+            window = window.intersection(rasterio.windows.Window(0, 0, ds.width, ds.height))
+            if window.width <= 0 or window.height <= 0:
+                raise ValueError("Selected AOI does not overlap the satellite raster.")
+            return ds.read(1, window=window, out_dtype="float32")
 
 
-def fetch_sentinel2_snippet(
-    item: dict[str, Any],
-    bbox: tuple[float, float, float, float],
-    max_dimension: int = 4096,
-) -> tuple[bytes, dict[str, Any]]:
-    bands = [
-        ("blue", ("blue", "b02")),
-        ("green", ("green", "b03")),
-        ("red", ("red", "b04")),
-        ("nir", ("nir", "b08")),
-    ]
-    arrays = []
-    transform = None
-    crs = None
-    for _, aliases in bands:
-        href = _asset_href(item, *aliases)
-        array, item_transform, item_crs = _clip_asset(href, bbox, max_dimension=max_dimension)
-        if transform is None:
-            transform, crs = item_transform, item_crs
-        elif array.shape != arrays[0].shape:
-            raise ValueError("Sentinel-2 band windows have incompatible shapes.")
-        arrays.append(array)
-
-    stack = np.stack(arrays).astype(np.uint16)
+def fetch_sentinel2_snippet(item: dict[str, Any], bbox: tuple[float, float, float, float]) -> tuple[bytes, dict[str, Any]]:
+    hrefs = {
+        "B02": _asset_href(item, "blue", "B02"),
+        "B03": _asset_href(item, "green", "B03"),
+        "B04": _asset_href(item, "red", "B04"),
+        "B08": _asset_href(item, "nir", "B08"),
+    }
+    missing = [band for band, href in hrefs.items() if not href]
+    if missing:
+        raise RuntimeError(f"Selected Sentinel-2 scene is missing required COG assets: {', '.join(missing)}")
+    arrays = [_clip_asset(hrefs[band], bbox) for band in ("B02", "B03", "B04", "B08")]
+    shapes = {a.shape for a in arrays}
+    if len(shapes) != 1:
+        raise RuntimeError("Sentinel-2 band windows do not align exactly for the selected AOI.")
     profile = {
         "driver": "GTiff",
-        "height": stack.shape[1],
-        "width": stack.shape[2],
+        "height": arrays[0].shape[0],
+        "width": arrays[0].shape[1],
         "count": 4,
-        "dtype": "uint16",
-        "crs": crs,
-        "transform": transform,
+        "dtype": "float32",
+        "crs": "EPSG:4326",
+        "transform": from_bounds(*bbox, arrays[0].shape[1], arrays[0].shape[0]),
         "compress": "deflate",
-        "BIGTIFF": "IF_SAFER",
     }
-    output = BytesIO()
+    out = BytesIO()
     with MemoryFile() as mem:
         with mem.open(**profile) as dst:
-            dst.write(stack)
-            dst.set_band_description(1, "Blue (B02)")
-            dst.set_band_description(2, "Green (B03)")
-            dst.set_band_description(3, "Red (B04)")
-            dst.set_band_description(4, "NIR (B08)")
-        output.write(mem.read())
-
+            for idx, arr in enumerate(arrays, start=1):
+                dst.write(arr, idx)
+        out.write(mem.read())
     props = item.get("properties", {})
     metadata = {
-        "scene_id": item.get("id", "unknown"),
-        "datetime": props.get("datetime") or props.get("start_datetime"),
+        "scene_id": item.get("id"),
+        "datetime": props.get("datetime"),
         "cloud_cover": props.get("eo:cloud_cover"),
-        "collection": item.get("collection") or S2_COLLECTION,
-        "source": "Element84 Earth Search / AWS Open Data",
-        "bbox": bbox,
-        "crs": str(crs) if crs else None,
+        "collection": item.get("collection", S2_COLLECTION),
+        "source": "Element84 Earth Search / Sentinel-2 L2A COG",
+        "bbox": list(bbox),
+        "crs": "EPSG:4326",
         "bands": ["B02", "B03", "B04", "B08"],
-        "platform": props.get("platform") or "Sentinel-2",
-        "instruments": props.get("instruments") or ["MSI"],
+        "platform": props.get("platform"),
+        "instruments": props.get("instruments", []),
         "mgrs_tile": props.get("s2:mgrs_tile"),
         "epsg": props.get("proj:epsg"),
     }
-    return output.getvalue(), metadata
+    return out.getvalue(), metadata
 
 
-def select_items(
-    features: list[dict[str, Any]],
-    count: int = 2,
-    min_gap_days: int = 14,
-) -> list[dict[str, Any]]:
-    if not features:
-        return []
-
-    parsed = [
-        (f.get("properties", {}).get("datetime"), f)
-        for f in features
-        if f.get("properties", {}).get("datetime")
-    ]
-    parsed.sort(key=lambda x: x[0], reverse=True)
-
-    # Prefer scenes whose representative COG is actually reachable. If a test
-    # fixture has no assets, preserve the old selection behavior.
-    usable = []
-    for value, feature in parsed:
-        assets = feature.get("assets") or {}
-        if assets and not _asset_available(feature):
-            continue
-        usable.append((value, feature))
-
-    if not usable:
-        return []
-
-    selected = [usable[0][1]]
-    first_date = date.fromisoformat(usable[0][0][:10])
+def select_items(features: list[dict[str, Any]], count: int = 1, min_gap_days: int = 14) -> list[dict[str, Any]]:
+    ordered = sorted(features, key=lambda item: item.get("properties", {}).get("datetime") or "", reverse=True)
+    reachable = [item for item in ordered if _asset_available(item)]
+    if not reachable:
+        reachable = ordered
     if count == 1:
-        return selected
+        return reachable[:1]
+    selected: list[dict[str, Any]] = []
+    for item in reachable:
+        if not selected:
+            selected.append(item)
+        else:
+            first = selected[0].get("properties", {}).get("datetime")
+            current = item.get("properties", {}).get("datetime")
+            if first and current:
+                from datetime import datetime
+                delta = abs((datetime.fromisoformat(first.replace("Z", "+00:00")) - datetime.fromisoformat(current.replace("Z", "+00:00"))).days)
+                if delta >= min_gap_days:
+                    selected.append(item)
+                    break
+    return selected
 
-    for value, feature in usable[1:]:
-        if abs((first_date - date.fromisoformat(value[:10])).days) >= min_gap_days:
-            selected.append(feature)
-            break
-    return selected[:count]
 
-
-def default_dates(days: int = 365) -> tuple[date, date]:
+def default_dates() -> tuple[date, date]:
     end = date.today()
-    return end - timedelta(days=days), end
+    return end - timedelta(days=365), end
