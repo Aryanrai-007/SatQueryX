@@ -12,9 +12,9 @@ from src.agent import AgenticOrchestrator, ExecutionStep
 from src.evidence import build_evidence, synthesize_answer
 from src.geospatial import (
     compute_ndvi,
-    open_raster,
     raster_info,
     raster_or_image,
+    read_preview,
     reproject_to_reference,
     rgb_preview,
     sar_to_db,
@@ -32,9 +32,6 @@ st.set_page_config(page_title="SatQueryX", page_icon="🛰️", layout="wide")
 st.markdown("""
 <style>
 .block-container {max-width: 1450px; padding-top: 1.5rem;}
-.small-muted {color: #6b7280; font-size: 0.9rem;}
-.trace-ok {padding: .35rem .6rem; border-left: 3px solid #16a34a; background: rgba(22,163,74,.06);}
-.trace-err {padding: .35rem .6rem; border-left: 3px solid #dc2626; background: rgba(220,38,38,.06);}
 </style>
 """, unsafe_allow_html=True)
 
@@ -50,18 +47,18 @@ with st.sidebar:
     st.subheader("Spectral settings")
     red_band = st.number_input("Red band (1-based)", min_value=1, value=3, step=1)
     nir_band = st.number_input("NIR band (1-based)", min_value=1, value=4, step=1)
-    sar_db = st.checkbox("Treat primary/secondary SAR values as linear power and convert to dB", value=False)
+    sar_db = st.checkbox("Convert SAR linear power to dB", value=False)
     st.divider()
     st.subheader("Detection")
     yolo_conf = st.slider("YOLO confidence", 0.05, 0.95, float(os.getenv("YOLO_CONFIDENCE", "0.25")), 0.05)
-    st.caption("YOLO uses the real checkpoint configured by YOLO_MODEL_PATH.")
+    st.caption("Uses the real checkpoint configured by YOLO_MODEL_PATH.")
 
 st.subheader("Ask SatQueryX")
 query = st.text_area("Natural-language query", placeholder="e.g. Detect vehicles and buildings, calculate NDVI, or compare these two images for change.", height=90)
 run = st.button("Run analysis", type="primary", use_container_width=True, disabled=not bool(primary and query.strip()))
 
 if primary:
-    col1, col2 = st.columns([1, 1])\    
+    col1, col2 = st.columns(2)
     with col1:
         st.markdown("### Primary input")
         st.write(f"**{primary.name}** · {primary.size / 1024:.1f} KB")
@@ -99,7 +96,7 @@ if run:
                 if validation:
                     raise ValueError("Primary GeoTIFF validation failed: " + " ".join(validation))
                 info = raster_info(primary_ds, primary.name)
-                arr, _ = __import__('src.geospatial', fromlist=['read_preview']).read_preview(primary_ds)
+                arr, _ = read_preview(primary_ds)
                 preview_image = Image.fromarray((rgb_preview(primary_ds) * 255).astype(np.uint8))
                 results["primary_info"] = info
                 steps.append(ExecutionStep("geospatial_validation", "success", f"CRS={info.crs}; {info.width}×{info.height}; {info.count} bands"))
@@ -109,14 +106,13 @@ if run:
                 arr = np.moveaxis(rgb, -1, 0).astype(np.float32)
                 steps.append(ExecutionStep("image_ingestion", "success", f"{rgb.shape[1]}×{rgb.shape[0]} RGB image"))
 
-            if preview_image:
-                pbuf = BytesIO()
-                preview_image.save(pbuf, format="PNG")
-                preview_png = pbuf.getvalue()
+            pbuf = BytesIO()
+            preview_image.save(pbuf, format="PNG")
+            preview_png = pbuf.getvalue()
 
             if "ndvi" in plan.tools:
                 if primary_ds is None:
-                    raise ValueError("NDVI requires a raster with explicit spectral bands; a normal RGB image is insufficient unless its bands are provided as a GeoTIFF.")
+                    raise ValueError("NDVI requires a GeoTIFF with explicit red and NIR spectral bands.")
                 ndvi = compute_ndvi(primary_ds, int(red_band), int(nir_band))
                 valid = np.isfinite(ndvi)
                 results["ndvi"] = {
@@ -126,7 +122,6 @@ if run:
                     "vegetated_fraction": float(np.mean(ndvi[valid] > 0.3)) if valid.any() else 0.0,
                 }
                 steps.append(ExecutionStep("ndvi", "success", f"red={red_band}, nir={nir_band}"))
-                st.write("NDVI computed from the configured bands.")
 
             if "sar_statistics" in plan.tools:
                 sar_arr = arr[0]
@@ -143,12 +138,11 @@ if run:
                     if validation:
                         raise ValueError("Secondary GeoTIFF validation failed: " + " ".join(validation))
                 else:
-                    secondary_img = sobj
                     secondary_ds = None
 
                 if "change_detection" in plan.tools:
                     if primary_ds is None or secondary_ds is None:
-                        raise ValueError("Change detection currently requires two georeferenced GeoTIFF inputs so the second image can be reprojected onto the first grid.")
+                        raise ValueError("Change detection requires two georeferenced GeoTIFF inputs so the second image can be aligned to the first grid.")
                     before = primary_ds.read(1).astype(np.float32)
                     after = reproject_to_reference(secondary_ds, primary_ds, 1)
                     ch = detect_change(before, after)
@@ -164,7 +158,7 @@ if run:
 
                 if "optical_sar_fusion" in plan.tools:
                     if primary_ds is None or secondary_ds is None:
-                        raise ValueError("Fusion requires two georeferenced GeoTIFF inputs.")
+                        raise ValueError("Optical/SAR fusion requires two georeferenced GeoTIFF inputs.")
                     optical = primary_ds.read(1).astype(np.float32)
                     sar = reproject_to_reference(secondary_ds, primary_ds, 1)
                     fu = fuse_optical_sar(optical, sar)
@@ -178,7 +172,6 @@ if run:
 
             evidence = build_evidence(results)
             steps.append(ExecutionStep("evidence_synthesis", "success", f"{len(evidence.facts)} evidence statements; confidence={evidence.confidence:.2f}"))
-            st.write("Evidence bundle created from computed results.")
             answer, provider = synthesize_answer(query, evidence, preview_image)
             results["answer"] = answer
             results["provider"] = provider
@@ -212,7 +205,6 @@ if "satquery_result" in st.session_state:
             for fact in evidence0.facts:
                 st.write("• " + fact)
             st.metric("Evidence confidence", f"{evidence0.confidence:.0%}")
-
         if "ndvi" in results0:
             st.markdown("### NDVI")
             st.image(results0["ndvi"]["array"], clamp=True, caption="Computed NDVI raster")
@@ -226,7 +218,6 @@ if "satquery_result" in st.session_state:
                     st.write(f"**{d.label}** · {d.confidence:.1%} · box={tuple(round(x, 1) for x in d.xyxy)}")
             else:
                 st.write("The configured detector returned no detections.")
-
     with right:
         st.header("Execution trace")
         for s in steps0:
