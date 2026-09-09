@@ -7,6 +7,7 @@ from PIL import Image
 
 from .models.gemini import GeminiClient
 from .models.remote_vlm import RemoteSensingVLM
+from .site_analysis import build_site_summary
 
 
 @dataclass
@@ -35,6 +36,41 @@ def build_evidence(results: dict[str, Any]) -> EvidenceBundle:
         tile = aoi.get("mgrs_tile") or "Unavailable"
         facts.append(f"AOI location={location}; WGS84 bbox={bbox_text}; scene={scene}; acquisition={acquired}; platform={platform}; instrument={instruments}; MGRS tile={tile}; cloud cover={cloud_text}; bands={','.join(aoi.get('bands', []))}; CRS={aoi.get('crs', 'Unavailable')}.")
         sources.append("OpenStreetMap/Nominatim AOI context + Earth Search Sentinel-2 metadata")
+
+        try:
+            site = build_site_summary(tuple(float(v) for v in bbox), results.get("ndvi")) if bbox else None
+            if site:
+                results["site_summary"] = site
+                facts.append(f"AOI footprint is approximately {site['bbox_area_ha']:.2f} hectares based on the selected WGS84 bounding box.")
+                sources.append("AOI footprint calculation")
+                if site.get("elevation"):
+                    e = site["elevation"]
+                    facts.append(f"Surface elevation from Copernicus DEM GLO-30: mean={e['mean_m']:.1f} m, median={e['median_m']:.1f} m, range={e['min_m']:.1f}–{e['max_m']:.1f} m, relief={e['relief_m']:.1f} m.")
+                    sources.append("Copernicus DEM GLO-30")
+                wc = site.get("worldcover")
+                if wc and wc.get("rows"):
+                    top = wc["rows"][:6]
+                    facts.append("ESA WorldCover land-cover composition: " + ", ".join(f"{r['label']}={r['fraction']:.1%} ({r['area_ha']:.2f} ha)" for r in top) + ".")
+                    grass = next((r for r in wc["rows"] if r["class"] == 30), None)
+                    water = next((r for r in wc["rows"] if r["class"] == 80), None)
+                    if grass:
+                        facts.append(f"Mapped grassland area: {grass['area_ha']:.2f} hectares ({grass['fraction']:.1%} of the WorldCover-mapped AOI pixels).")
+                    if water:
+                        facts.append(f"Mapped permanent-water area: {water['area_ha']:.2f} hectares ({water['fraction']:.1%} of the WorldCover-mapped AOI pixels).")
+                    sources.append("ESA WorldCover 2021 v200")
+                water = site.get("waterways")
+                if water:
+                    if water.get("names"):
+                        facts.append("OpenStreetMap mapped water features in/near the AOI: " + ", ".join(water["names"]) + ".")
+                    elif water.get("count"):
+                        facts.append(f"OpenStreetMap identifies {water['count']} mapped water/waterway feature(s) in the AOI; no feature name was returned.")
+                    else:
+                        facts.append("OpenStreetMap returned no mapped river, stream, canal, drain, or natural-water feature inside the selected AOI bbox.")
+                    sources.append("OpenStreetMap / Overpass API")
+                for limitation in site.get("limitations", []):
+                    facts.append("Site-intelligence limitation: " + limitation)
+        except Exception as exc:
+            facts.append(f"Site-intelligence analysis unavailable: {exc}")
 
     if "ndvi" in results:
         nd = results["ndvi"]
