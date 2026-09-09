@@ -28,7 +28,6 @@ class RasterInfo:
 
 
 def open_raster(data: bytes):
-    """Open uploaded bytes as an in-memory rasterio dataset."""
     memfile = MemoryFile(data)
     ds = memfile.open()
     return memfile, ds
@@ -72,8 +71,6 @@ def read_preview(ds, max_size: int = 1200) -> tuple[np.ndarray, dict]:
         resampling=Resampling.bilinear,
         masked=True,
     )
-    # Convert to floating point BEFORE filling masked integer rasters with NaN.
-    # np.ma.filled(..., np.nan) cannot insert NaN into uint16/int16 arrays.
     arr = arr.astype(np.float32)
     arr = np.ma.filled(arr, np.nan)
     return arr, {"width": out_w, "height": out_h}
@@ -89,27 +86,55 @@ def normalize_band(band: np.ndarray, low: float | None = None, high: float | Non
     if high is None:
         high = float(np.nanpercentile(band, 98))
     if high <= low:
-        raise ValueError("Band has no usable dynamic range.")
+        # Constant/near-constant tiles are valid data; show them rather than failing.
+        midpoint = float(np.nanmedian(band[valid]))
+        return np.where(valid, 0.5, 0.0).astype(np.float32) if not np.isfinite(midpoint) else np.where(valid, 0.5, 0.0).astype(np.float32)
     return np.clip((band - low) / (high - low), 0, 1)
 
 
-def rgb_preview(ds, rgb_bands: tuple[int, int, int] | None = None) -> np.ndarray:
+def _upscale_preview(rgb: np.ndarray, max_dimension: int = 1200) -> np.ndarray:
+    """Upscale small native-resolution scenes for display/detection without inventing bands."""
+    h, w = rgb.shape[:2]
+    if max(h, w) >= max_dimension:
+        return rgb
+    scale = max_dimension / max(h, w)
+    size = (max(1, int(round(w * scale))), max(1, int(round(h * scale))))
+    image = Image.fromarray(np.clip(rgb * 255.0, 0, 255).astype(np.uint8), mode="RGB")
+    image = image.resize(size, Image.Resampling.LANCZOS)
+    return np.asarray(image).astype(np.float32) / 255.0
+
+
+def rgb_preview(ds, rgb_bands: tuple[int, int, int] | None = None, upscale: bool = True) -> np.ndarray:
+    """Create a display-ready RGB preview.
+
+    SatQueryX AOI snippets are stored as B02/B03/B04/B08. For a 4-band Sentinel-2
+    snippet the true-colour order is therefore B04/B03/B02 (3,2,1), not B02/B03/B04.
+    Small AOIs are upscaled only for display/detector input; no extra spectral detail
+    is created.
+    """
     if rgb_bands is None:
-        if ds.count >= 3:
+        if ds.count >= 4:
+            rgb_bands = (3, 2, 1)  # Sentinel-2 B04/B03/B02 true colour
+        elif ds.count >= 3:
             rgb_bands = (1, 2, 3)
         else:
             gray, _ = read_preview(ds)
             g = normalize_band(gray[0])
             return np.dstack([g, g, g])
+
+    if any(i < 1 or i > ds.count for i in rgb_bands):
+        raise ValueError(f"RGB band indexes must be between 1 and {ds.count}.")
+
+    max_size = 1200
+    scale = min(1.0, max_size / max(ds.width, ds.height))
+    out_w = max(1, int(ds.width * scale))
+    out_h = max(1, int(ds.height * scale))
     bands = [
-        ds.read(
-            i,
-            out_shape=(min(1200, ds.height), min(1200, ds.width)),
-            resampling=Resampling.bilinear,
-        ).astype(np.float32)
+        ds.read(i, out_shape=(out_h, out_w), resampling=Resampling.bilinear).astype(np.float32)
         for i in rgb_bands
     ]
-    return np.dstack([normalize_band(b) for b in bands])
+    rgb = np.dstack([normalize_band(b) for b in bands])
+    return _upscale_preview(rgb) if upscale else rgb
 
 
 def compute_ndvi(ds, red_band: int, nir_band: int) -> np.ndarray:
@@ -130,7 +155,6 @@ def sar_to_db(power: np.ndarray) -> np.ndarray:
 
 
 def reproject_to_reference(src_ds, ref_ds, band: int = 1) -> np.ndarray:
-    """Reproject a source band onto the exact reference raster grid."""
     destination = np.full((ref_ds.height, ref_ds.width), np.nan, dtype=np.float32)
     reproject(
         source=src_ds.read(band).astype(np.float32),
@@ -165,7 +189,6 @@ def image_bytes_to_array(data: bytes) -> np.ndarray:
 
 
 def raster_or_image(data: bytes, name: str):
-    """Return (kind, object). GeoTIFF uses an in-memory rasterio dataset; normal images use ndarray."""
     lower = name.lower()
     if lower.endswith((".tif", ".tiff")):
         mem, ds = open_raster(data)
