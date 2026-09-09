@@ -10,29 +10,16 @@ from dotenv import load_dotenv
 
 from src.agent import AgenticOrchestrator, ExecutionStep
 from src.evidence import build_evidence, synthesize_answer
-from src.geospatial import (
-    compute_ndvi,
-    raster_info,
-    raster_or_image,
-    read_preview,
-    reproject_to_reference,
-    rgb_preview,
-    sar_to_db,
-    validate_geospatial,
-)
+from src.geospatial import compute_ndvi, raster_info, raster_or_image, read_preview, reproject_to_reference, rgb_preview, sar_to_db, validate_geospatial
 from src.report import build_pdf
 from src.tools.change_detection import detect_change
 from src.tools.optical_sar_fusion import fuse_optical_sar
-from src.tools.visual_grounding import run_yolo
+from src.tools.visual_grounding import draw_detections, run_yolo
 
 load_dotenv()
-
 st.set_page_config(page_title="SatQueryX", page_icon="🛰️", layout="wide")
-
 st.markdown("""
-<style>
-.block-container {max-width: 1450px; padding-top: 1.5rem;}
-</style>
+<style>.block-container {max-width: 1450px; padding-top: 1.5rem;}</style>
 """, unsafe_allow_html=True)
 
 st.title("🛰️ SatQueryX")
@@ -115,12 +102,7 @@ if run:
                     raise ValueError("NDVI requires a GeoTIFF with explicit red and NIR spectral bands.")
                 ndvi = compute_ndvi(primary_ds, int(red_band), int(nir_band))
                 valid = np.isfinite(ndvi)
-                results["ndvi"] = {
-                    "array": ndvi,
-                    "mean": float(np.nanmean(ndvi)),
-                    "median": float(np.nanmedian(ndvi)),
-                    "vegetated_fraction": float(np.mean(ndvi[valid] > 0.3)) if valid.any() else 0.0,
-                }
+                results["ndvi"] = {"array": ndvi, "mean": float(np.nanmean(ndvi)), "median": float(np.nanmedian(ndvi)), "vegetated_fraction": float(np.mean(ndvi[valid] > 0.3)) if valid.any() else 0.0}
                 steps.append(ExecutionStep("ndvi", "success", f"red={red_band}, nir={nir_band}"))
 
             if "sar_statistics" in plan.tools:
@@ -146,14 +128,7 @@ if run:
                     before = primary_ds.read(1).astype(np.float32)
                     after = reproject_to_reference(secondary_ds, primary_ds, 1)
                     ch = detect_change(before, after)
-                    results["change_detection"] = {
-                        "difference": ch.difference,
-                        "heatmap": ch.normalized_heatmap,
-                        "mask": ch.threshold_mask,
-                        "changed_fraction": ch.changed_fraction,
-                        "mean_absolute_change": ch.mean_absolute_change,
-                        "ssim": ch.ssim,
-                    }
+                    results["change_detection"] = {"difference": ch.difference, "heatmap": ch.normalized_heatmap, "mask": ch.threshold_mask, "changed_fraction": ch.changed_fraction, "mean_absolute_change": ch.mean_absolute_change, "ssim": ch.ssim}
                     steps.append(ExecutionStep("change_detection", "success", f"changed_fraction={ch.changed_fraction:.2%}; SSIM={ch.ssim:.4f}"))
 
                 if "optical_sar_fusion" in plan.tools:
@@ -171,7 +146,8 @@ if run:
                 steps.append(ExecutionStep("visual_grounding", "success", f"{len(detections)} detections"))
 
             evidence = build_evidence(results)
-            steps.append(ExecutionStep("evidence_synthesis", "success", f"{len(evidence.facts)} evidence statements; confidence={evidence.confidence:.2f}"))
+            confidence_detail = f"{evidence.confidence:.2f}" if evidence.confidence is not None else "not estimated"
+            steps.append(ExecutionStep("evidence_synthesis", "success", f"{len(evidence.facts)} evidence statements; detector confidence={confidence_detail}"))
             answer, provider = synthesize_answer(query, evidence, preview_image)
             results["answer"] = answer
             results["provider"] = provider
@@ -179,7 +155,6 @@ if run:
             status.update(label="Analysis complete", state="complete", expanded=False)
 
         st.session_state["satquery_result"] = (query, plan, steps, results, evidence, preview_png)
-
     except Exception as exc:
         steps.append(ExecutionStep("analysis", "error", str(exc)))
         st.session_state["satquery_result"] = (query, plan, steps, results, None, preview_png)
@@ -204,7 +179,7 @@ if "satquery_result" in st.session_state:
             st.markdown("### Computed evidence")
             for fact in evidence0.facts:
                 st.write("• " + fact)
-            st.metric("Evidence confidence", f"{evidence0.confidence:.0%}")
+            st.metric("Detector confidence", f"{evidence0.confidence:.0%}" if evidence0.confidence is not None else "Not estimated")
         if "ndvi" in results0:
             st.markdown("### NDVI")
             st.image(results0["ndvi"]["array"], clamp=True, caption="Computed NDVI raster")
@@ -212,7 +187,10 @@ if "satquery_result" in st.session_state:
             st.markdown("### Change heatmap")
             st.image(results0["change_detection"]["heatmap"], clamp=True, caption="Computed normalized change intensity")
         if "detections" in results0:
-            st.markdown("### Detections")
+            st.markdown("### Visual grounding")
+            annotated = draw_detections(preview_image if preview_image else Image.open(BytesIO(preview0)), results0["detections"]) if preview0 else None
+            if annotated:
+                st.image(annotated, caption="Detector-produced bounding boxes")
             if results0["detections"]:
                 for d in results0["detections"]:
                     st.write(f"**{d.label}** · {d.confidence:.1%} · box={tuple(round(x, 1) for x in d.xyxy)}")
