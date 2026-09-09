@@ -11,12 +11,28 @@ SatQueryX is a no-login Streamlit application for real remote-sensing analysis. 
 - **Optional integrations are explicit:** Gemini and the Hugging Face VLM are adapters. The application can run deterministic geospatial tools without them, but VLM synthesis requires a configured provider.
 - **Traceability:** every analysis records the selected tools, validation steps, warnings, and execution results.
 
+## Interactive AOI workflow
+
+SatQueryX now includes a Leaflet-powered OpenStreetMap AOI selector. A user can:
+
+1. Pan and zoom the map.
+2. Draw a rectangle or polygon around the exact region of interest.
+3. Have the AOI converted to a WGS84 bounding box.
+4. Reverse-geocode the centre of the selected area for human-readable location context.
+5. Search the public Earth Search STAC catalog for Sentinel-2 Level-2A imagery using a configurable date range and cloud-cover limit.
+6. Clip the selected B02/B03/B04/B08 assets to the AOI and build a local, georeferenced four-band GeoTIFF.
+7. Optionally fetch two temporally separated scenes for change detection.
+8. Run the normal SatQueryX analysis and generate a report containing AOI, acquisition, sensor, raster, evidence, metrics and execution-trace information.
+
+The map uses the standard OpenStreetMap raster tile endpoint with visible attribution and only requests tiles needed for interactive viewing. SatQueryX does not bulk-download or prefetch OSM tiles.
+
 ## Architecture
 
-`Streamlit UI -> Geospatial ingestion/preprocessing -> Agentic orchestrator -> analysis tools -> optional RS-VLM -> Evidence synthesizer -> results/report`
+`Leaflet/OSM AOI -> STAC discovery -> Sentinel-2 COG clipping -> GeoTIFF -> Geospatial preprocessing -> Agentic orchestrator -> analysis tools -> optional RS-VLM -> Evidence synthesizer -> results/report`
 
 Implemented modules:
 
+- `src/aoi.py` — Leaflet AOI drawing, OSM reverse geocoding, Earth Search STAC discovery, Sentinel-2 COG clipping and AOI metadata.
 - `src/geospatial.py` — GeoTIFF/imagery inspection, CRS and resolution validation, optical/SAR preparation, NDVI, tiling.
 - `src/tools/visual_grounding.py` — real Ultralytics YOLO inference with configurable weights.
 - `src/tools/change_detection.py` — real aligned raster difference/SSIM-style change metrics and heatmaps.
@@ -24,8 +40,8 @@ Implemented modules:
 - `src/models/gemini.py` — Google Gemini API adapter.
 - `src/models/remote_vlm.py` — Hugging Face Transformers adapter for configurable PaliGemma/remote-sensing VLM checkpoints.
 - `src/agent.py` — intent classification, input validation, tool selection, execution trace and safety gates.
-- `src/evidence.py` — evidence aggregation and grounded Gemini/VLM response generation.
-- `src/report.py` — PDF report generation from actual analysis outputs.
+- `src/evidence.py` — evidence aggregation and grounded Gemini/VLM response generation, including AOI acquisition metadata.
+- `src/report.py` — PDF report generation from actual analysis outputs, including AOI and acquisition provenance.
 
 ## Setup
 
@@ -67,7 +83,7 @@ For visual grounding:
 
 ### Optical
 
-GeoTIFFs with valid georeferencing are preferred. NDVI requires red and near-infrared bands. You can provide their 1-based band indexes in the UI.
+GeoTIFFs with valid georeferencing are preferred. NDVI requires red and near-infrared bands. The automatic Sentinel-2 AOI workflow supplies B02/B03/B04/B08 as bands 1–4, so use Red=3 and NIR=4 for those fetched snippets.
 
 ### SAR
 
@@ -75,7 +91,7 @@ GeoTIFF SAR products are accepted. Calibration is data-product dependent; SatQue
 
 ### Change detection
 
-Provide two temporally separated, spatially compatible rasters. SatQueryX reprojects the second raster to the first raster's grid before calculating the change metric.
+Provide two temporally separated, spatially compatible rasters. SatQueryX reprojects the second raster to the first raster's grid before calculating the change metric. The AOI workflow can automatically retrieve two suitable Sentinel-2 dates.
 
 ## Safety / truthfulness
 
