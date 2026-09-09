@@ -35,12 +35,14 @@ def geometry_from_drawing(drawing: dict[str, Any] | None) -> dict[str, Any] | No
 
 def geometry_bbox(geometry: dict[str, Any]) -> tuple[float, float, float, float]:
     coords = geometry.get("coordinates", [])
+
     def points(value):
         if value and isinstance(value[0], (int, float)):
             yield value
         else:
             for child in value:
                 yield from points(child)
+
     pts = list(points(coords))
     if not pts:
         raise ValueError("The selected area contains no coordinates.")
@@ -60,18 +62,54 @@ def reverse_geocode(lat: float, lon: float) -> str:
     return str(response.json().get("display_name") or "Location name unavailable")
 
 
+def _stac_error(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+        detail = payload.get("description") or payload.get("detail") or payload.get("title")
+        if detail:
+            return str(detail)
+    except ValueError:
+        pass
+    text = response.text.strip()
+    return text[:500] if text else f"HTTP {response.status_code}"
+
+
 def search_sentinel2(bbox: tuple[float, float, float, float], start_date: date, end_date: date, max_cloud: float = 15.0, limit: int = 12) -> list[dict[str, Any]]:
-    payload = {
+    url = f"{STAC_URL}/search"
+    headers = {"User-Agent": APP_UA, "Accept": "application/geo+json"}
+    base_payload = {
         "collections": [S2_COLLECTION],
         "bbox": list(bbox),
         "datetime": f"{start_date.isoformat()}/{end_date.isoformat()}",
-        "query": {"eo:cloud_cover": {"lte": float(max_cloud)}},
         "limit": int(limit),
-        # STAC sort fields use the GeoJSON/STAC property path.
-        "sortby": [{"field": "properties.datetime", "direction": "desc"}],
     }
-    response = requests.post(f"{STAC_URL}/search", json=payload, headers={"User-Agent": APP_UA, "Accept": "application/geo+json"}, timeout=30)
-    response.raise_for_status()
+
+    # Earth Search already returns results newest-first by datetime, so do not
+    # send an optional sortby clause. This avoids compatibility problems with
+    # STAC server versions while preserving the desired ordering.
+    filtered_payload = {
+        **base_payload,
+        "query": {"eo:cloud_cover": {"lte": float(max_cloud)}},
+    }
+    response = requests.post(url, json=filtered_payload, headers=headers, timeout=30)
+
+    # Some STAC deployments can reject the query extension even though the
+    # catalog advertises it. Fall back to an unfiltered metadata search and
+    # apply the cloud threshold locally; the returned scenes remain genuine
+    # Earth Search records and no imagery is fabricated.
+    if response.status_code == 400:
+        fallback = requests.post(url, json=base_payload, headers=headers, timeout=30)
+        if fallback.ok:
+            features = fallback.json().get("features", [])
+            return [
+                feature
+                for feature in features
+                if float(feature.get("properties", {}).get("eo:cloud_cover", 101.0)) <= float(max_cloud)
+            ]
+        raise RuntimeError(f"Earth Search rejected the AOI search ({fallback.status_code}): {_stac_error(fallback)}")
+
+    if not response.ok:
+        raise RuntimeError(f"Earth Search rejected the AOI search ({response.status_code}): {_stac_error(response)}")
     return response.json().get("features", [])
 
 
