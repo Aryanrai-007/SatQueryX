@@ -61,7 +61,15 @@ def reverse_geocode(lat: float, lon: float) -> str:
 
 
 def search_sentinel2(bbox: tuple[float, float, float, float], start_date: date, end_date: date, max_cloud: float = 15.0, limit: int = 12) -> list[dict[str, Any]]:
-    payload = {"collections": [S2_COLLECTION], "bbox": list(bbox), "datetime": f"{start_date.isoformat()}/{end_date.isoformat()}", "query": {"eo:cloud_cover": {"lte": float(max_cloud)}}, "limit": int(limit), "sortby": [{"field": "datetime", "direction": "desc"}]}
+    payload = {
+        "collections": [S2_COLLECTION],
+        "bbox": list(bbox),
+        "datetime": f"{start_date.isoformat()}/{end_date.isoformat()}",
+        "query": {"eo:cloud_cover": {"lte": float(max_cloud)}},
+        "limit": int(limit),
+        # STAC sort fields use the GeoJSON/STAC property path.
+        "sortby": [{"field": "properties.datetime", "direction": "desc"}],
+    }
     response = requests.post(f"{STAC_URL}/search", json=payload, headers={"User-Agent": APP_UA, "Accept": "application/geo+json"}, timeout=30)
     response.raise_for_status()
     return response.json().get("features", [])
