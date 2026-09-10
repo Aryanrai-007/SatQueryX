@@ -141,10 +141,11 @@ def main() -> None:
     )
     model = prepare_model_for_kbit_training(model)
     model.gradient_checkpointing_enable()
-    # The vision tower stays frozen for memory efficiency; LoRA adapts the
-    # language-side remote-sensing reasoning and the multimodal projector remains
-    # part of the base model. This is a genuine parameter-efficient adaptation.
-    for parameter in model.vision_tower.parameters():
+    # Transformers 5.x nests the PaliGemma vision backbone under `model`.
+    # Keep the vision tower frozen for memory efficiency; LoRA adapts the
+    # language-side remote-sensing reasoning while the multimodal projector
+    # remains part of the base model.
+    for parameter in model.model.vision_tower.parameters():
         parameter.requires_grad = False
 
     lora = LoraConfig(
