@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from io import BytesIO
 from typing import Any
 
 import numpy as np
@@ -18,80 +17,71 @@ class SpecialistResult:
     model: str
     evidence: list[str]
     limitations: list[str]
+    regions: list[dict[str, Any]] | None = None
 
 
 def _vlm() -> RemoteSensingVLM:
     model_id = os.getenv("REMOTE_VLM_MODEL_ID", "").strip()
     if not model_id:
-        raise RuntimeError(
-            "REMOTE_VLM_MODEL_ID is not configured. Configure a domain-adapted SatQueryX checkpoint "
-            "before using the specialist VLM workflows. A generic VLM is not presented as the SIH solution."
-        )
+        raise RuntimeError("REMOTE_VLM_MODEL_ID is not configured. Configure a domain-adapted SatQueryX checkpoint before using the specialist VLM workflows.")
     return RemoteSensingVLM(VLMConfig(model_id=model_id, max_new_tokens=int(os.getenv("REMOTE_VLM_MAX_NEW_TOKENS", "256"))))
 
 
 def run_single_vqa(image: Image.Image, query: str) -> SpecialistResult:
-    prompt = (
-        "remote sensing visual question answering. Answer only from the image and question. "
-        "Use remote-sensing terminology and state uncertainty when the image does not support a claim.\n"
-        f"Question: {query}\nAnswer:"
-    )
     model = _vlm()
-    answer = model.generate(image, prompt)
+    answer = model.generate(image, "remote sensing visual question answering. Answer only from the image and question. State uncertainty when unsupported.\nQuestion: " + query + "\nAnswer:")
     return SpecialistResult("single_vqa", answer, model.config.model_id, ["domain-adapted RS-VLM output"], [])
 
 
 def run_captioning(image: Image.Image) -> SpecialistResult:
-    prompt = (
-        "remote sensing scene captioning. Describe land cover, major visible objects, spatial relationships, "
-        "and relevant environmental context. Do not invent geographic coordinates or sensor metadata.\nCaption:"
-    )
     model = _vlm()
-    answer = model.generate(image, prompt)
+    answer = model.generate(image, "remote sensing scene captioning. Describe land cover, major visible objects, spatial relationships and environmental context. Do not invent coordinates or sensor metadata.\nCaption:")
     return SpecialistResult("captioning", answer, model.config.model_id, ["domain-adapted RS-VLM caption"], [])
 
 
-def run_change_vqa(before: Image.Image, after: Image.Image, query: str) -> SpecialistResult:
-    # The paired montage is an explicit two-observation representation. A future
-    # checkpoint can consume native two-image tensors; until then the same adapted
-    # RS-VLM sees both observations with unambiguous T1/T2 labels.
-    canvas = Image.new("RGB", (before.width + after.width, max(before.height, after.height)), "black")
-    canvas.paste(before.convert("RGB"), (0, 0))
-    canvas.paste(after.convert("RGB"), (before.width, 0))
+def run_grounding(image: Image.Image, query: str) -> SpecialistResult:
+    model_id = os.getenv("RS_GROUNDING_MODEL_ID", "").strip()
+    if not model_id:
+        raise RuntimeError("RS_GROUNDING_MODEL_ID is not configured. A remote-sensing grounding checkpoint is required for text-guided region grounding.")
+    model = RemoteSensingVLM(VLMConfig(model_id=model_id, max_new_tokens=192))
+    prompt = ('remote sensing referring-expression grounding. Return JSON only in this schema: '
+              '{"regions":[{"label":"...","bbox":[x1,y1,x2,y2]}],"answer":"..."}. '
+              'Coordinates are normalized 0..1000 relative to the image. Ground only the regions referred to by the query.\n'
+              f'Query: {query}\nJSON:')
+    raw = model.generate(image, prompt)
+    import json
+    try:
+        parsed = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
+    except Exception as exc:
+        raise RuntimeError(f"Grounding checkpoint did not return valid JSON regions: {raw[:300]}") from exc
+    regions = parsed.get("regions") or []
+    return SpecialistResult("text_grounding", str(parsed.get("answer", "Grounded region(s) returned.")), model.config.model_id, ["remote-sensing grounding checkpoint output"], [], regions)
+
+
+def _pair_canvas(left: Image.Image, right: Image.Image, left_label: str, right_label: str) -> Image.Image:
+    left, right = left.convert("RGB"), right.convert("RGB")
+    canvas = Image.new("RGB", (left.width + right.width, max(left.height, right.height)), "black")
+    canvas.paste(left, (0, 0)); canvas.paste(right, (left.width, 0))
     draw = ImageDraw.Draw(canvas)
-    draw.rectangle((0, 0, min(180, before.width), 28), fill="black")
-    draw.rectangle((before.width, 0, min(before.width + 180, canvas.width), 28), fill="black")
-    draw.text((8, 7), "T1 / BEFORE", fill="white")
-    draw.text((before.width + 8, 7), "T2 / AFTER", fill="white")
-    prompt = (
-        "remote sensing change visual question answering. The image is a paired temporal observation: "
-        "left=T1/before and right=T2/after. Describe only changes supported by both observations. "
-        "Distinguish changed location/type from unchanged context.\n"
-        f"Question: {query}\nAnswer:"
-    )
+    draw.rectangle((0, 0, min(220, left.width), 30), fill="black")
+    draw.rectangle((left.width, 0, min(left.width + 220, canvas.width), 30), fill="black")
+    draw.text((8, 8), left_label, fill="white")
+    draw.text((left.width + 8, 8), right_label, fill="white")
+    return canvas
+
+
+def run_change_vqa(before: Image.Image, after: Image.Image, query: str) -> SpecialistResult:
     model = _vlm()
-    answer = model.generate(canvas, prompt)
-    return SpecialistResult("change_vqa", answer, model.config.model_id, ["domain-adapted RS-VLM temporal reasoning"], ["Current inference uses a labelled T1/T2 montage; native two-image encoder support requires a checkpoint trained for paired inputs."])
+    canvas = _pair_canvas(before, after, "T1 / BEFORE", "T2 / AFTER")
+    answer = model.generate(canvas, "remote sensing change visual question answering. Left is T1/before and right is T2/after. Describe only changes supported by both observations.\nQuestion: " + query + "\nAnswer:")
+    return SpecialistResult("change_vqa", answer, model.config.model_id, ["domain-adapted RS-VLM temporal reasoning"], ["Inference uses an explicit T1/T2 labelled pair canvas; a native two-image checkpoint can replace this adapter."])
 
 
 def run_optical_sar(image_optical: Image.Image, image_sar: Image.Image, query: str) -> SpecialistResult:
-    canvas = Image.new("RGB", (image_optical.width + image_sar.width, max(image_optical.height, image_sar.height)), "black")
-    canvas.paste(image_optical.convert("RGB"), (0, 0))
-    canvas.paste(image_sar.convert("RGB"), (image_optical.width, 0))
-    draw = ImageDraw.Draw(canvas)
-    draw.rectangle((0, 0, min(190, image_optical.width), 28), fill="black")
-    draw.rectangle((image_optical.width, 0, min(image_optical.width + 190, canvas.width), 28), fill="black")
-    draw.text((8, 7), "OPTICAL", fill="white")
-    draw.text((image_optical.width + 8, 7), "SAR", fill="white")
-    prompt = (
-        "remote sensing cross-modal reasoning. The paired image contains OPTICAL on the left and SAR on the right. "
-        "Use complementary spectral/contextual and radar structural evidence. Explicitly say when one modality "
-        "is insufficient. Do not infer precise class areas unless they are supplied by computed evidence.\n"
-        f"Question: {query}\nAnswer:"
-    )
     model = _vlm()
-    answer = model.generate(canvas, prompt)
-    return SpecialistResult("optical_sar", answer, model.config.model_id, ["domain-adapted RS-VLM cross-modal reasoning"], ["Current inference represents the pair as a labelled joint canvas; a native dual-encoder checkpoint can replace this adapter without changing the workflow contract."])
+    canvas = _pair_canvas(image_optical, image_sar, "OPTICAL", "SAR")
+    answer = model.generate(canvas, "remote sensing cross-modal reasoning. Left is OPTICAL and right is SAR. Use complementary spectral/contextual and radar structural evidence. Do not invent precise class areas unless computed evidence supplies them.\nQuestion: " + query + "\nAnswer:")
+    return SpecialistResult("optical_sar", answer, model.config.model_id, ["domain-adapted RS-VLM cross-modal reasoning"], ["Inference uses a labelled optical/SAR joint canvas; a native dual-encoder checkpoint can replace this adapter."])
 
 
 def image_from_array(array: np.ndarray) -> Image.Image:
