@@ -10,7 +10,7 @@ SatQueryX is a no-login Streamlit application implementing the SIH2026 problem s
 |---|---|
 | Single-image VQA | `rs_vqa` specialist + BigEarthNet.txt/RSVQA evaluation |
 | Additional single-image task | captioning and text-guided grounding |
-| Remote-sensing adaptation | PaliGemma QLoRA training entrypoint using BigEarthNet.txt |
+| Remote-sensing adaptation | executable PaliGemma QLoRA training on real BigEarthNet.txt image/text pairs |
 | Bi-temporal change | aligned raster change map + `change_vqa` specialist |
 | Optical/SAR pair | optical/SAR fusion + multimodal RS-VLM workflow |
 | Agentic orchestration | `src/agent.py` workflow registry/routing |
@@ -86,84 +86,8 @@ Grounding        |                  |
 
 ## Model adaptation
 
-`training/train_rs_vlm.py` performs real QLoRA adaptation of `google/paligemma-3b-pt-448` using the official BigEarthNet.txt image/text loader. It starts with the RGB Sentinel-2 subset because the base PaliGemma image processor expects a three-channel image. The paired S1/S2 dataset remains the canonical data contract for the optical/SAR workflow and native multimodal checkpoint.
+`training/train_rs_vlm.py` performs real QLoRA adaptation of `google/paligemma2-3b-pt-224` using the official BigEarthNet.txt image/text loader. It starts with the RGB Sentinel-2 subset because the base PaliGemma image processor expects a three-channel image. The paired S1/S2 dataset remains the canonical data contract for the optical/SAR workflow and native multimodal checkpoint.
 
-The adapted checkpoint should be uploaded to Hugging Face and configured with:
+### Training setup
 
-```bash
-REMOTE_VLM_MODEL_ID=<your-adapted-checkpoint>
-HF_TOKEN=<read-token-if-gated>
-```
-
-For text-guided grounding, configure a checkpoint trained on BigEarthNet.txt/VRSBench grounding annotations:
-
-```bash
-RS_GROUNDING_MODEL_ID=<your-grounding-checkpoint>
-```
-
-Do not use the generic PaliGemma checkpoint as the final SIH remote-sensing model.
-
-## Installation
-
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-For adaptation/evaluation:
-
-```bash
-pip install -r requirements-training.txt
-```
-
-Copy the official BigEarthNet.txt `ben_txt_datamodule.py` into the training environment and configure:
-
-```bash
-BIGEARTHNET_IMAGE_LMDB=/path/to/Encoded-BigEarthNet
-BIGEARTHNET_METADATA=/path/to/BigEarthNet.txt.parquet
-BIGEARTHNET_LOADER=/path/to/ben_txt_datamodule.py
-```
-
-Then:
-
-```bash
-python training/train_rs_vlm.py --limit 5000 --output artifacts/satqueryx-rsvlm
-```
-
-For the final adaptation run, remove `--limit` and use a suitable GPU environment.
-
-## Benchmark evaluation
-
-Generate JSONL prediction records containing `task`, `prediction` and `reference`, then run:
-
-```bash
-python scripts/evaluate_predictions.py predictions.jsonl
-```
-
-The evaluator reports exact match and token F1 by task. Dataset-specific official metrics should also be run where the prescribed benchmark code requires them; SatQueryX does not invent benchmark scores.
-
-## Input workflows
-
-### Single image
-
-- GeoTIFF/TIFF for geospatial/spectral analysis.
-- PNG/JPEG for approved benchmark visual inputs.
-- VQA, captioning and text-guided grounding.
-
-### Bi-temporal
-
-Two spatially corresponding GeoTIFFs are validated, the second is reprojected to the first raster grid, and a real difference/SSIM change map is produced. The adapted RS-VLM receives an explicitly labelled T1/T2 representation for change VQA. A native paired checkpoint can replace that adapter without changing the workflow contract.
-
-### Optical + SAR
-
-Two inputs are checked for modality. Optical and SAR statistics/fusion are computed from actual pixels, and the multimodal RS-VLM receives a labelled optical/SAR joint representation. A native dual-encoder checkpoint can replace this adapter.
-
-### AOI explorer
-
-The Leaflet/OpenStreetMap interface lets users draw an AOI, reverse-geocode it, query Earth Search, fetch Sentinel-2 L2A B02/B03/B04/B08 COGs and clip them to a local georeferenced GeoTIFF. Two dates can be selected for change analysis.
-
-## Truthfulness and provenance
-
-SatQueryX never generates fake detections, fake confidence, invented acquisition metadata, placeholder benchmark scores or synthetic satellite observations. Gemini is used as a language/evidence synthesizer; the SIH task capability is routed through the configured remote-sensing specialist checkpoint.
-
-Model weights, dataset binaries and API credentials are intentionally excluded from Git.
+See `training/README.md` for the complete data preparation and training sequence. Run `scripts/check_training_env.py` before training.
