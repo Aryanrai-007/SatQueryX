@@ -70,6 +70,45 @@ class WrappedDataset:
         }
 
 
+def evaluate_loss(model, dataset, collate_fn, torch_module, batch_size: int) -> float:
+    """Run explicit multimodal validation outside Trainer's generic eval loop.
+
+    Transformers 5.x Trainer evaluation can re-enter custom LMDB-backed
+    multimodal datasets through an incompatible path. The model/processor
+    themselves are fully compatible, so validation is performed explicitly
+    with the same collator used for training.
+    """
+    from torch.utils.data import DataLoader
+
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collate_fn,
+        pin_memory=True,
+    )
+
+    model.eval()
+    total_loss = 0.0
+    batches = 0
+
+    with torch_module.no_grad():
+        for batch in loader:
+            batch = {
+                key: value.to("cuda") if torch_module.is_tensor(value) else value
+                for key, value in batch.items()
+            }
+            outputs = model(**batch)
+            loss = outputs.loss
+            if not torch_module.isfinite(loss):
+                raise RuntimeError(f"Validation produced a non-finite loss: {loss.item()}")
+            total_loss += float(loss.detach().cpu())
+            batches += 1
+
+    model.train()
+    return total_loss / max(batches, 1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="SatQueryX BigEarthNet.txt QLoRA training")
     parser.add_argument("--model", default=os.getenv("BASE_VLM_MODEL_ID", "google/paligemma2-3b-pt-224"))
@@ -84,9 +123,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--grad-accum", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=2e-5)
-    # PaliGemma 224 inserts 256 image tokens. Keep enough room for the
-    # question + answer instead of truncating away the required image tokens.
-    parser.add_argument("--max-length", type=int, default=512)
+    parser.add_argument("--max-length", type=int, default=512, help="Must retain PaliGemma's 256 image tokens at 224px")
     args = parser.parse_args()
 
     try:
@@ -182,7 +219,6 @@ def main() -> None:
         output_dir=str(output),
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.learning_rate,
         # Transformers 5.x accepts a float warmup_steps value as a ratio;
@@ -190,8 +226,10 @@ def main() -> None:
         warmup_steps=0.03,
         weight_decay=0.01,
         logging_steps=10,
-        eval_strategy="steps",
-        eval_steps=250,
+        # Do not use Trainer's generic multimodal evaluation loop. It can
+        # re-enter the custom LMDB dataset incompatibly under Transformers 5.x.
+        # Validation is run explicitly below with the same tested collator.
+        eval_strategy="no",
         save_strategy="steps",
         save_steps=250,
         save_total_limit=2,
@@ -206,11 +244,21 @@ def main() -> None:
         model=model,
         args=training_args,
         train_dataset=train_ds,
-        eval_dataset=val_ds,
         data_collator=collate,
     )
     print(f"Training samples: {len(train_ds)} | validation samples: {len(val_ds)}")
     trainer.train()
+
+    print("Running explicit validation...")
+    val_loss = evaluate_loss(
+        model=model,
+        dataset=val_ds,
+        collate_fn=collate,
+        torch_module=torch,
+        batch_size=args.batch_size,
+    )
+    print(f"Validation loss: {val_loss:.6f}")
+
     trainer.save_model(str(output))
     processor.save_pretrained(str(output))
     print(f"Saved SatQueryX PEFT adapter to {output.resolve()}")
