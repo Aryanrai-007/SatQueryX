@@ -1,0 +1,44 @@
+# SatQueryX SIH2026 dataset registry.
+# Paths are local/HF cache locations; no dataset binaries are committed.
+
+bigearthnet_txt:
+  role: domain_adaptation
+  hf_id: BIFOLD-BigEarthNetv2-0/BigEarthNet.txt
+  paper: https://arxiv.org/abs/2603.29630
+  split_column: split
+  train_split: train
+  validation_split: validation
+  test_split: test
+  benchmark_split: bench
+  image_store_env: BIGEARTHNET_IMAGE_LMDB
+  metadata_env: BIGEARTHNET_METADATA
+  tasks:
+    - captioning
+    - vqa
+    - grounding
+    - optical_sar
+
+vrsbench:
+  role: single_image_evaluation
+  repository: https://github.com/lx709/VRSBench
+  tasks:
+    - captioning
+    - grounding
+    - vqa
+  root_env: VRSBENCH_ROOT
+
+rsvqa:
+  role: single_image_vqa_evaluation
+  repository: https://github.com/syvlo/RSVQA
+  root_env: RSVQA_ROOT
+
+cdvqa:
+  role: temporal_change_vqa
+  repository: https://github.com/YZHJessica/CDVQA
+  root_env: CDVQA_ROOT
+
+isro_sac:
+  role: hidden_evaluation_adapter
+  optical_sensor: Cartosat-2S
+  sar_sensor: RISAT
+  note: Evaluation data and annotations are supplied by the evaluator and are not committed.
