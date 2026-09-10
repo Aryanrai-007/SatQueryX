@@ -1,0 +1,23 @@
+workflows:
+  single_vqa:
+    required_images: 1
+    tools: [rs_vqa]
+    datasets: [bigearthnet_txt, rsvqa]
+  single_captioning:
+    required_images: 1
+    tools: [rs_captioning]
+    datasets: [bigearthnet_txt, vrsbench]
+  text_grounding:
+    required_images: 1
+    tools: [rs_grounding]
+    datasets: [bigearthnet_txt, vrsbench]
+  bi_temporal_change:
+    required_images: 2
+    relationship: temporal
+    tools: [change_detection, change_vqa]
+    datasets: [cdvqa]
+  optical_sar:
+    required_images: 2
+    relationship: cross_modal
+    tools: [optical_sar_fusion, multimodal_rs_vlm]
+    datasets: [bigearthnet_txt]
