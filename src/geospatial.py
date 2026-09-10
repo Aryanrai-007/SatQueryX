@@ -86,35 +86,34 @@ def normalize_band(band: np.ndarray, low: float | None = None, high: float | Non
     if high is None:
         high = float(np.nanpercentile(band, 98))
     if high <= low:
-        # Constant/near-constant tiles are valid data; show them rather than failing.
-        midpoint = float(np.nanmedian(band[valid]))
-        return np.where(valid, 0.5, 0.0).astype(np.float32) if not np.isfinite(midpoint) else np.where(valid, 0.5, 0.0).astype(np.float32)
+        return np.where(valid, 0.5, 0.0).astype(np.float32)
     return np.clip((band - low) / (high - low), 0, 1)
 
 
 def _upscale_preview(rgb: np.ndarray, max_dimension: int = 1200) -> np.ndarray:
-    """Upscale small native-resolution scenes for display/detection without inventing bands."""
+    """Enlarge tiny rasters for display without smoothing away their native pixels."""
     h, w = rgb.shape[:2]
     if max(h, w) >= max_dimension:
         return rgb
     scale = max_dimension / max(h, w)
     size = (max(1, int(round(w * scale))), max(1, int(round(h * scale))))
     image = Image.fromarray(np.clip(rgb * 255.0, 0, 255).astype(np.uint8), mode="RGB")
-    image = image.resize(size, Image.Resampling.LANCZOS)
+    # Nearest-neighbour preserves the actual native pixel structure. It does not create
+    # false spatial detail, unlike a smooth interpolation of an already tiny AOI.
+    image = image.resize(size, Image.Resampling.NEAREST)
     return np.asarray(image).astype(np.float32) / 255.0
 
 
 def rgb_preview(ds, rgb_bands: tuple[int, int, int] | None = None, upscale: bool = True) -> np.ndarray:
     """Create a display-ready RGB preview.
 
-    SatQueryX AOI snippets are stored as B02/B03/B04/B08. For a 4-band Sentinel-2
-    snippet the true-colour order is therefore B04/B03/B02 (3,2,1), not B02/B03/B04.
-    Small AOIs are upscaled only for display/detector input; no extra spectral detail
-    is created.
+    AOI Sentinel-2 snippets are stored as B02/B03/B04/B08. For a 4-band snippet the
+    true-colour order is B04/B03/B02 (3,2,1). Small AOIs are enlarged only for display
+    and detector input; no spectral or spatial detail is invented.
     """
     if rgb_bands is None:
         if ds.count >= 4:
-            rgb_bands = (3, 2, 1)  # Sentinel-2 B04/B03/B02 true colour
+            rgb_bands = (3, 2, 1)
         elif ds.count >= 3:
             rgb_bands = (1, 2, 3)
         else:
