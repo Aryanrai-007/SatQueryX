@@ -22,8 +22,18 @@ def main() -> None:
     root = Path(args.root)
     root.mkdir(parents=True, exist_ok=True)
 
-    parquet = hf_hub_download(repo_id=REPO, filename="BigEarthNet.txt.parquet", local_dir=str(root))
-    loader = hf_hub_download(repo_id=REPO, filename="ben_txt_datamodule.py", local_dir=str(root))
+    parquet = hf_hub_download(
+        repo_id=REPO,
+        filename="BigEarthNet.txt.parquet",
+        repo_type="dataset",
+        local_dir=str(root),
+    )
+    loader = hf_hub_download(
+        repo_id=REPO,
+        filename="ben_txt_datamodule.py",
+        repo_type="dataset",
+        local_dir=str(root),
+    )
     print(f"Metadata: {parquet}")
     print(f"Official loader: {loader}")
     print()
