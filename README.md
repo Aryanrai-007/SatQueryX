@@ -2,101 +2,168 @@
 
 **Interactive Vision-Language Assistant for Multimodal Remote Sensing Image Analysis through Text Queries**
 
-SatQueryX is a no-login Streamlit application for real remote-sensing analysis. It accepts optical/RGB imagery, SAR imagery, and GeoTIFF rasters, validates geospatial metadata, derives NDVI where spectral bands permit it, performs raster change detection, optionally runs YOLO-based visual grounding, optionally loads a Hugging Face remote-sensing VLM, and uses Google Gemini for evidence-grounded natural-language synthesis when configured.
+SatQueryX is a no-login Streamlit application implementing the SIH2026 problem scope: single-image remote-sensing VQA plus captioning/grounding, bi-temporal change understanding, co-registered optical/SAR reasoning, and an observable agentic controller. The system reports missing models/services rather than substituting dummy outputs.
 
-## Design principles
+## SIH2026 requirement coverage
 
-- **No authentication:** there is deliberately no login, signup, auth middleware, or session authentication layer.
-- **No fabricated results:** unavailable models, missing API keys, unsupported raster bands, or invalid geospatial inputs produce explicit errors/warnings instead of placeholder answers.
-- **Optional integrations are explicit:** Gemini and the Hugging Face VLM are adapters. The application can run deterministic geospatial tools without them, but VLM synthesis requires a configured provider.
-- **Traceability:** every analysis records the selected tools, validation steps, warnings, and execution results.
+| Requirement | SatQueryX implementation |
+|---|---|
+| Single-image VQA | `rs_vqa` specialist + BigEarthNet.txt/RSVQA evaluation |
+| Additional single-image task | captioning and text-guided grounding |
+| Remote-sensing adaptation | PaliGemma QLoRA training entrypoint using BigEarthNet.txt |
+| Bi-temporal change | aligned raster change map + `change_vqa` specialist |
+| Optical/SAR pair | optical/SAR fusion + multimodal RS-VLM workflow |
+| Agentic orchestration | `src/agent.py` workflow registry/routing |
+| Input validation | CRS, resolution, modality, image-count and pair compatibility checks |
+| Evidence/confidence/trace | evidence bundle, model provenance, confidence only from real detector scores, execution trace |
+| Downloadable report | PDF containing evidence, provenance and metrics |
+| Public benchmark evaluation | BigEarthNet.txt bench, VRSBench, RSVQA and CDVQA prediction/evaluation paths |
+| Hidden ISRO/SAC readiness | sensor-agnostic GeoTIFF pair contract for Cartosat-2S/RISAT |
 
-## Interactive AOI workflow
+The problem statement requires single-image VQA plus captioning or grounding, change understanding from bi-temporal inputs, optical/SAR joint analysis, remote-sensing adaptation, and automatic model/tool orchestration. It also states that generic LLM/VLM use without remote-sensing adaptation is insufficient.
 
-SatQueryX now includes a Leaflet-powered OpenStreetMap AOI selector. A user can:
+## Dataset roles
 
-1. Pan and zoom the map.
-2. Draw a rectangle or polygon around the exact region of interest.
-3. Have the AOI converted to a WGS84 bounding box.
-4. Reverse-geocode the centre of the selected area for human-readable location context.
-5. Search the public Earth Search STAC catalog for Sentinel-2 Level-2A imagery using a configurable date range and cloud-cover limit.
-6. Clip the selected B02/B03/B04/B08 assets to the AOI and build a local, georeferenced four-band GeoTIFF.
-7. Optionally fetch two temporally separated scenes for change detection.
-8. Run the normal SatQueryX analysis and generate a report containing AOI, acquisition, sensor, raster, evidence, metrics and execution-trace information.
+### 1. BigEarthNet.txt — adaptation foundation
 
-The map uses the standard OpenStreetMap raster tile endpoint with visible attribution and only requests tiles needed for interactive viewing. SatQueryX does not bulk-download or prefetch OSM tiles.
+Official HF dataset: `BIFOLD-BigEarthNetv2-0/BigEarthNet.txt`  
+Paper: https://arxiv.org/abs/2603.29630
+
+BigEarthNet.txt provides co-registered Sentinel-1 SAR and Sentinel-2 multispectral imagery with image-text annotations for captioning, VQA and referring/bounding-box tasks. SatQueryX uses it for remote-sensing VLM adaptation and as a multisensor benchmark contract.
+
+The official dataset loader exposes RGB, S2 multispectral and S1+S2 band combinations. Image LMDB and metadata parquet are intentionally kept outside Git.
+
+### 2. VRSBench — single-image captioning/grounding/VQA
+
+Repository: https://github.com/lx709/VRSBench
+
+Used for single-image captioning, visual grounding and VQA evaluation. Its grounding annotations are the target contract for `RS_GROUNDING_MODEL_ID`.
+
+### 3. RSVQA — quantitative single-image VQA
+
+Repository: https://github.com/syvlo/RSVQA
+
+Used to evaluate questions involving object presence, counting, spatial relationships and other remote-sensing VQA tasks.
+
+### 4. CDVQA — bi-temporal change VQA
+
+Repository: https://github.com/YZHJessica/CDVQA
+
+Used for change-question evaluation and temporal reasoning. SatQueryX combines its specialist answer with an independently computed aligned change map when georeferenced rasters are available.
+
+### 5. ISRO/SAC — hidden final evaluation
+
+The problem statement specifies pre-georeferenced/co-registered Cartosat-2S optical and RISAT SAR pairs with task-specific answers, labels, bounding boxes or masks. Those files are not committed and are accepted through the same modality/pair validation layer.
 
 ## Architecture
 
-`Leaflet/OSM AOI -> STAC discovery -> Sentinel-2 COG clipping -> GeoTIFF -> Geospatial preprocessing -> Agentic orchestrator -> analysis tools -> optional RS-VLM -> Evidence synthesizer -> results/report`
+```text
+Natural-language query
+        |
+        v
+Agentic orchestrator
+(intent + image count + modality + compatibility)
+        |
+   +----+---------+------------------+
+   |              |                  |
+   v              v                  v
+Single image   Bi-temporal       Optical + SAR
+   |              |                  |
+RS VQA       Change map +       Fusion + multimodal
+Caption      Change VQA         RS-VLM
+Grounding        |                  |
+   +--------------+------------------+
+                  |
+                  v
+          Evidence synthesizer
+                  |
+          Answer + visual proof
+                  |
+          Trace + confidence
+                  |
+               PDF report
+```
 
-Implemented modules:
+## Model adaptation
 
-- `src/aoi.py` — Leaflet AOI drawing, OSM reverse geocoding, Earth Search STAC discovery, Sentinel-2 COG clipping and AOI metadata.
-- `src/geospatial.py` — GeoTIFF/imagery inspection, CRS and resolution validation, optical/SAR preparation, NDVI, tiling.
-- `src/tools/visual_grounding.py` — real Ultralytics YOLO inference with configurable weights.
-- `src/tools/change_detection.py` — real aligned raster difference/SSIM-style change metrics and heatmaps.
-- `src/tools/optical_sar_fusion.py` — aligned feature/statistical fusion for optical + SAR evidence.
-- `src/models/gemini.py` — Google Gemini API adapter.
-- `src/models/remote_vlm.py` — Hugging Face Transformers adapter for configurable PaliGemma/remote-sensing VLM checkpoints.
-- `src/agent.py` — intent classification, input validation, tool selection, execution trace and safety gates.
-- `src/evidence.py` — evidence aggregation and grounded Gemini/VLM response generation, including AOI acquisition metadata.
-- `src/report.py` — PDF report generation from actual analysis outputs, including AOI and acquisition provenance.
+`training/train_rs_vlm.py` performs real QLoRA adaptation of `google/paligemma-3b-pt-448` using the official BigEarthNet.txt image/text loader. It starts with the RGB Sentinel-2 subset because the base PaliGemma image processor expects a three-channel image. The paired S1/S2 dataset remains the canonical data contract for the optical/SAR workflow and native multimodal checkpoint.
 
-## Setup
-
-Python 3.10+ is recommended.
+The adapted checkpoint should be uploaded to Hugging Face and configured with:
 
 ```bash
-python -m venv .venv
-# Windows
-.venv\\Scripts\\activate
-# Linux/macOS
-source .venv/bin/activate
+REMOTE_VLM_MODEL_ID=<your-adapted-checkpoint>
+HF_TOKEN=<read-token-if-gated>
+```
+
+For text-guided grounding, configure a checkpoint trained on BigEarthNet.txt/VRSBench grounding annotations:
+
+```bash
+RS_GROUNDING_MODEL_ID=<your-grounding-checkpoint>
+```
+
+Do not use the generic PaliGemma checkpoint as the final SIH remote-sensing model.
+
+## Installation
+
+```bash
 pip install -r requirements.txt
-copy .env.example .env  # Windows
-# cp .env.example .env  # Linux/macOS
 streamlit run app.py
 ```
 
-### Required/optional external services
+For adaptation/evaluation:
 
-The core raster operations do not require an API key.
+```bash
+pip install -r requirements-training.txt
+```
 
-For natural-language VLM synthesis:
+Copy the official BigEarthNet.txt `ben_txt_datamodule.py` into the training environment and configure:
 
-1. Create a Gemini API key and set `GEMINI_API_KEY` in `.env`.
-2. Set `GEMINI_MODEL` to a model available to your account.
+```bash
+BIGEARTHNET_IMAGE_LMDB=/path/to/Encoded-BigEarthNet
+BIGEARTHNET_METADATA=/path/to/BigEarthNet.txt.parquet
+BIGEARTHNET_LOADER=/path/to/ben_txt_datamodule.py
+```
 
-For the domain-adapted VLM:
+Then:
 
-- Set `REMOTE_VLM_MODEL_ID` to the Hugging Face repository/checkpoint you will provide.
-- If the checkpoint is gated, also provide `HF_TOKEN`.
-- The application will report a clear configuration error rather than silently substituting another model.
+```bash
+python training/train_rs_vlm.py --limit 5000 --output artifacts/satqueryx-rsvlm
+```
 
-For visual grounding:
+For the final adaptation run, remove `--limit` and use a suitable GPU environment.
 
-- Set `YOLO_MODEL_PATH` to a real YOLO checkpoint, or use a supported Ultralytics model name such as `yolo11n.pt` if your environment can download it.
-- No detection is claimed when the model cannot be loaded.
+## Benchmark evaluation
 
-## Data requirements
+Generate JSONL prediction records containing `task`, `prediction` and `reference`, then run:
 
-### Optical
+```bash
+python scripts/evaluate_predictions.py predictions.jsonl
+```
 
-GeoTIFFs with valid georeferencing are preferred. NDVI requires red and near-infrared bands. The automatic Sentinel-2 AOI workflow supplies B02/B03/B04/B08 as bands 1–4, so use Red=3 and NIR=4 for those fetched snippets.
+The evaluator reports exact match and token F1 by task. Dataset-specific official metrics should also be run where the prescribed benchmark code requires them; SatQueryX does not invent benchmark scores.
 
-### SAR
+## Input workflows
 
-GeoTIFF SAR products are accepted. Calibration is data-product dependent; SatQueryX supports explicit linear-to-dB conversion and validates numeric ranges. Product-specific calibration constants should be supplied through metadata or preprocessing before analysis when required by the sensor/product.
+### Single image
 
-### Change detection
+- GeoTIFF/TIFF for geospatial/spectral analysis.
+- PNG/JPEG for approved benchmark visual inputs.
+- VQA, captioning and text-guided grounding.
 
-Provide two temporally separated, spatially compatible rasters. SatQueryX reprojects the second raster to the first raster's grid before calculating the change metric. The AOI workflow can automatically retrieve two suitable Sentinel-2 dates.
+### Bi-temporal
 
-## Safety / truthfulness
+Two spatially corresponding GeoTIFFs are validated, the second is reprojected to the first raster grid, and a real difference/SSIM change map is produced. The adapted RS-VLM receives an explicitly labelled T1/T2 representation for change VQA. A native paired checkpoint can replace that adapter without changing the workflow contract.
 
-SatQueryX does not generate synthetic detections, fake confidence scores, invented satellite metadata, or placeholder API responses. If an external dependency is missing, the UI exposes the exact reason and the setup required to enable that capability.
+### Optical + SAR
 
-## Project status
+Two inputs are checked for modality. Optical and SAR statistics/fusion are computed from actual pixels, and the multimodal RS-VLM receives a labelled optical/SAR joint representation. A native dual-encoder checkpoint can replace this adapter.
 
-This repository is the initial implementation scaffold and working application foundation. Model weights and API credentials are intentionally not committed to Git.
+### AOI explorer
+
+The Leaflet/OpenStreetMap interface lets users draw an AOI, reverse-geocode it, query Earth Search, fetch Sentinel-2 L2A B02/B03/B04/B08 COGs and clip them to a local georeferenced GeoTIFF. Two dates can be selected for change analysis.
+
+## Truthfulness and provenance
+
+SatQueryX never generates fake detections, fake confidence, invented acquisition metadata, placeholder benchmark scores or synthetic satellite observations. Gemini is used as a language/evidence synthesizer; the SIH task capability is routed through the configured remote-sensing specialist checkpoint.
+
+Model weights, dataset binaries and API credentials are intentionally excluded from Git.
