@@ -126,140 +126,218 @@ if run:
         for e in errors: st.error(e)
         st.stop()
 
-    steps: list[ExecutionStep] = []; results: dict = {}; preview_image = None; preview_png = None
+    steps: list[ExecutionStep] = []
+    results: dict = {}
+    preview_image = None
+    preview_png = None
     primary_mem = primary_ds = secondary_mem = secondary_ds = None
+    evidence = None
     primary_bytes = primary.getvalue() if primary else st.session_state["aoi_primary_bytes"]
     primary_name = primary.name if primary else "sentinel2_aoi.tif"
     secondary_bytes = secondary.getvalue() if secondary else st.session_state.get("aoi_secondary_bytes")
     secondary_name = secondary.name if secondary else "sentinel2_aoi_secondary.tif"
     try:
         with st.status("Running SatQueryX analysis…", expanded=True) as status:
-            steps.append(ExecutionStep("intent_classification","success",", ".join(plan.intents))); st.write("Intent classified: "+", ".join(plan.intents))
-            steps.append(ExecutionStep("tool_selection","success",", ".join(plan.tools))); st.write("Tools selected: "+", ".join(plan.tools))
+            steps.append(ExecutionStep("intent_classification", "success", ", ".join(plan.intents)))
+            st.write("Intent classified: " + ", ".join(plan.intents))
+            steps.append(ExecutionStep("tool_selection", "success", ", ".join(plan.tools)))
+            st.write("Tools selected: " + ", ".join(plan.tools))
+
             kind, obj = raster_or_image(primary_bytes, primary_name)
             if kind == "raster":
                 primary_mem, primary_ds = obj
                 validation = validate_geospatial(primary_ds)
-                if validation: raise ValueError("Primary GeoTIFF validation failed: "+" ".join(validation))
+                if validation:
+                    raise ValueError("Primary GeoTIFF validation failed: " + " ".join(validation))
                 info = raster_info(primary_ds, primary_name)
-                preview_image = Image.fromarray((rgb_preview(primary_ds)*255).astype(np.uint8))
+                preview_image = Image.fromarray((rgb_preview(primary_ds) * 255).astype(np.uint8))
                 arr = primary_ds.read().astype(np.float32)
                 results["primary_info"] = info
-                steps.append(ExecutionStep("geospatial_validation","success",f"CRS={info.crs}; {info.width}×{info.height}; {info.count} bands; resolution={info.resolution_x:g}×{info.resolution_y:g}"))
+                steps.append(ExecutionStep("geospatial_validation", "success", f"CRS={info.crs}; {info.width}×{info.height}; {info.count} bands; resolution={info.resolution_x:g}×{info.resolution_y:g}"))
             else:
-                rgb = obj; preview_image = Image.fromarray(rgb); arr = np.moveaxis(rgb,-1,0).astype(np.float32)
-                steps.append(ExecutionStep("image_ingestion","success",f"{rgb.shape[1]}×{rgb.shape[0]} RGB image"))
+                rgb = obj
+                preview_image = Image.fromarray(rgb)
+                arr = np.moveaxis(rgb, -1, 0).astype(np.float32)
+                steps.append(ExecutionStep("image_ingestion", "success", f"{rgb.shape[1]}×{rgb.shape[0]} RGB image"))
 
             if st.session_state.get("aoi_primary_meta") and not primary:
-                results["aoi"] = {**st.session_state["aoi_primary_meta"], "location": st.session_state.get("aoi_location"), "bbox": geometry_bbox(st.session_state["aoi_geometry"]), "geometry": st.session_state["aoi_geometry"]}
-                steps.append(ExecutionStep("aoi_context","success",f"Location={results['aoi']['location']}; scene={results['aoi']['scene_id']}"))
+                results["aoi"] = {
+                    **st.session_state["aoi_primary_meta"],
+                    "location": st.session_state.get("aoi_location"),
+                    "bbox": geometry_bbox(st.session_state["aoi_geometry"]),
+                    "geometry": st.session_state["aoi_geometry"],
+                }
+                steps.append(ExecutionStep("aoi_context", "success", f"Location={results['aoi']['location']}; scene={results['aoi']['scene_id']}"))
 
             if "ndvi" in plan.tools:
-                if primary_ds is None: raise ValueError("NDVI requires a GeoTIFF with explicit red and NIR spectral bands.")
-                ndvi = compute_ndvi(primary_ds,int(red_band),int(nir_band)); valid=np.isfinite(ndvi)
-                results["ndvi"]={"array":ndvi,"mean":float(np.nanmean(ndvi)),"median":float(np.nanmedian(ndvi)),"vegetated_fraction":float(np.mean(ndvi[valid]>.3)) if valid.any() else 0.0}
-                steps.append(ExecutionStep("ndvi","success",f"red={red_band}, nir={nir_band}; mean={results['ndvi']['mean']:.4f}; vegetated_fraction={results['ndvi']['vegetated_fraction']:.2%}"))
+                if primary_ds is None:
+                    raise ValueError("NDVI requires a GeoTIFF with explicit red and NIR spectral bands.")
+                ndvi = compute_ndvi(primary_ds, int(red_band), int(nir_band))
+                valid = np.isfinite(ndvi)
+                results["ndvi"] = {
+                    "array": ndvi,
+                    "mean": float(np.nanmean(ndvi)),
+                    "median": float(np.nanmedian(ndvi)),
+                    "vegetated_fraction": float(np.mean(ndvi[valid] > .3)) if valid.any() else 0.0,
+                }
+                steps.append(ExecutionStep("ndvi", "success", f"red={red_band}, nir={nir_band}; mean={results['ndvi']['mean']:.4f}; vegetated_fraction={results['ndvi']['vegetated_fraction']:.2%}"))
 
             if "sar_statistics" in plan.tools:
-                sar_arr=arr[0]; sar_arr=sar_to_db(sar_arr) if sar_db else sar_arr
-                results["sar"]={"mean":float(np.nanmean(sar_arr)),"std":float(np.nanstd(sar_arr)),"min":float(np.nanmin(sar_arr)),"max":float(np.nanmax(sar_arr))}
-                steps.append(ExecutionStep("sar_statistics","success","Computed from actual raster pixels"))
+                sar_arr = arr[0]
+                sar_arr = sar_to_db(sar_arr) if sar_db else sar_arr
+                results["sar"] = {
+                    "mean": float(np.nanmean(sar_arr)), "std": float(np.nanstd(sar_arr)),
+                    "min": float(np.nanmin(sar_arr)), "max": float(np.nanmax(sar_arr)),
+                }
+                steps.append(ExecutionStep("sar_statistics", "success", "Computed from actual raster pixels"))
 
             if secondary_bytes:
-                skind,sobj=raster_or_image(secondary_bytes,secondary_name)
-                if skind=="raster":
-                    secondary_mem,secondary_ds=sobj; validation=validate_geospatial(secondary_ds)
-                    if validation: raise ValueError("Secondary GeoTIFF validation failed: "+" ".join(validation))
-                    results["secondary_info"]=raster_info(secondary_ds,secondary_name)
-                    steps.append(ExecutionStep("secondary_geospatial_validation","success","Validated georeferenced secondary raster"))
+                skind, sobj = raster_or_image(secondary_bytes, secondary_name)
+                if skind == "raster":
+                    secondary_mem, secondary_ds = sobj
+                    validation = validate_geospatial(secondary_ds)
+                    if validation:
+                        raise ValueError("Secondary GeoTIFF validation failed: " + " ".join(validation))
+                    results["secondary_info"] = raster_info(secondary_ds, secondary_name)
+                    steps.append(ExecutionStep("secondary_geospatial_validation", "success", "Validated georeferenced secondary raster"))
                 if "change_detection" in plan.tools:
-                    if primary_ds is None or secondary_ds is None: raise ValueError("Change detection requires two georeferenced GeoTIFF inputs.")
-                    before=primary_ds.read(1).astype(np.float32); after=reproject_to_reference(secondary_ds,primary_ds,1); ch=detect_change(before,after)
-                    results["change_detection"]={"difference":ch.difference,"heatmap":ch.normalized_heatmap,"mask":ch.threshold_mask,"changed_fraction":ch.changed_fraction,"mean_absolute_change":ch.mean_absolute_change,"ssim":ch.ssim}
-                    steps.append(ExecutionStep("change_detection","success",f"changed_fraction={ch.changed_fraction:.2%}; SSIM={ch.ssim:.4f}"))
+                    if primary_ds is None or secondary_ds is None:
+                        raise ValueError("Change detection requires two georeferenced GeoTIFF inputs.")
+                    before = primary_ds.read(1).astype(np.float32)
+                    after = reproject_to_reference(secondary_ds, primary_ds, 1)
+                    ch = detect_change(before, after)
+                    results["change_detection"] = {
+                        "difference": ch.difference, "heatmap": ch.normalized_heatmap,
+                        "mask": ch.threshold_mask, "changed_fraction": ch.changed_fraction,
+                        "mean_absolute_change": ch.mean_absolute_change, "ssim": ch.ssim,
+                    }
+                    steps.append(ExecutionStep("change_detection", "success", f"changed_fraction={ch.changed_fraction:.2%}; SSIM={ch.ssim:.4f}"))
                 if "optical_sar_fusion" in plan.tools:
-                    if primary_ds is None or secondary_ds is None: raise ValueError("Optical/SAR fusion requires two georeferenced GeoTIFF inputs.")
-                    optical=primary_ds.read(1).astype(np.float32); sar=reproject_to_reference(secondary_ds,primary_ds,1); fu=fuse_optical_sar(optical,sar)
-                    results["fusion"]={"fused":fu.fused,"correlation":fu.correlation,"optical_mean":fu.optical_mean,"sar_mean":fu.sar_mean,"optical_std":fu.optical_std,"sar_std":fu.sar_std}
+                    if primary_ds is None or secondary_ds is None:
+                        raise ValueError("Optical/SAR fusion requires two georeferenced GeoTIFF inputs.")
+                    optical = primary_ds.read(1).astype(np.float32)
+                    sar = reproject_to_reference(secondary_ds, primary_ds, 1)
+                    fu = fuse_optical_sar(optical, sar)
+                    results["fusion"] = {
+                        "fused": fu.fused, "correlation": fu.correlation,
+                        "optical_mean": fu.optical_mean, "sar_mean": fu.sar_mean,
+                        "optical_std": fu.optical_std, "sar_std": fu.sar_std,
+                    }
 
-            # Site intelligence is always attempted when an AOI exists. It is real external data, cached and bounded.
-            if results.get("aoi",{}).get("bbox"):
+            # Run site intelligence exactly once. build_evidence consumes this result and never re-fetches it.
+            if results.get("aoi", {}).get("bbox"):
                 with st.spinner("Computing bounded site intelligence…"):
-                    site=build_site_summary(results["aoi"]["bbox"], results.get("ndvi"), results["aoi"].get("geometry"))
-                results["site_summary"]=site
-                steps.append(ExecutionStep("site_intelligence","success",f"area={site['area_ha']:.3f} ha; buildings={(site.get('buildings') or {}).get('count','unavailable')}"))
+                    site = build_site_summary(
+                        results["aoi"]["bbox"],
+                        results.get("ndvi"),
+                        results["aoi"].get("geometry"),
+                    )
+                results["site_summary"] = site
+                building_count = (site.get("buildings") or {}).get("count")
+                detail = f"area={site['area_ha']:.3f} ha; buildings={building_count if building_count is not None else 'unavailable'}"
+                steps.append(ExecutionStep("site_intelligence", "success", detail))
 
             if "visual_grounding" in plan.tools:
                 try:
-                    detections=run_yolo(preview_image,confidence=yolo_conf); results["detections"]=detections
-                    steps.append(ExecutionStep("visual_grounding","success",f"{len(detections)} detections"))
+                    detections = run_yolo(preview_image, confidence=yolo_conf)
+                    results["detections"] = detections
+                    steps.append(ExecutionStep("visual_grounding", "success", f"{len(detections)} detections"))
                 except Exception as exc:
-                    results["detector_limitation"]=str(exc)
-                    steps.append(ExecutionStep("visual_grounding","warning",str(exc)))
-                    st.warning("Image detector unavailable. SatQueryX will continue with the available geospatial/site evidence instead of fabricating detections.")
+                    results["detector_limitation"] = str(exc)
+                    steps.append(ExecutionStep("visual_grounding", "warning", str(exc)))
+                    st.warning("Image detector unavailable. SatQueryX will continue with available geospatial/site evidence instead of fabricating detections.")
 
-            evidence=build_evidence(results)
-            confidence_detail=f"{evidence.confidence:.2f}" if evidence.confidence is not None else "not estimated"
-            steps.append(ExecutionStep("evidence_synthesis","success",f"{len(evidence.facts)} evidence statements; detector confidence={confidence_detail}"))
-            answer,provider=synthesize_answer(query,evidence,preview_image)
-            results["answer"]=answer; results["provider"]=provider
-            steps.append(ExecutionStep("language_synthesis","success",provider)); results["execution_steps"]=list(steps)
-            status.update(label="Analysis complete",state="complete",expanded=False)
+            evidence = build_evidence(results)
+            confidence_detail = f"{evidence.confidence:.2f}" if evidence.confidence is not None else "not estimated"
+            steps.append(ExecutionStep("evidence_synthesis", "success", f"{len(evidence.facts)} evidence statements; detector confidence={confidence_detail}"))
+            answer, provider = synthesize_answer(query, evidence, preview_image)
+            results["answer"] = answer
+            results["provider"] = provider
+            steps.append(ExecutionStep("language_synthesis", "success", provider))
+            results["execution_steps"] = list(steps)
+            status.update(label="Analysis complete", state="complete", expanded=False)
 
-        pbuf=BytesIO(); preview_image.save(pbuf,format="PNG"); preview_png=pbuf.getvalue()
-        st.session_state["satquery_result"]=(query,plan,steps,results,evidence,preview_png)
+        pbuf = BytesIO()
+        preview_image.save(pbuf, format="PNG")
+        preview_png = pbuf.getvalue()
+        st.session_state["satquery_result"] = (query, plan, steps, results, evidence, preview_png)
     except Exception as exc:
-        steps.append(ExecutionStep("analysis","error",str(exc))); results["execution_steps"]=list(steps)
-        st.session_state["satquery_result"]=(query,plan,steps,results,None,preview_png); st.error(str(exc))
+        steps.append(ExecutionStep("analysis", "error", str(exc)))
+        results["execution_steps"] = list(steps)
+        st.session_state["satquery_result"] = (query, plan, steps, results, evidence, preview_png)
+        st.error(str(exc))
     finally:
-        if primary_mem: primary_mem.close()
-        if secondary_mem: secondary_mem.close()
+        if primary_mem:
+            primary_mem.close()
+        if secondary_mem:
+            secondary_mem.close()
 
 if "satquery_result" in st.session_state:
-    query0,plan0,steps0,results0,evidence0,preview0=st.session_state["satquery_result"]
-    st.divider(); left,right=st.columns([2.1,1])
+    query0, plan0, steps0, results0, evidence0, preview0 = st.session_state["satquery_result"]
+    st.divider()
+    left, right = st.columns([2.1, 1])
     with left:
         st.header("Results & evidence")
         if preview0:
-            st.markdown("### Input imagery"); st.image(preview0,caption="AOI / primary true-colour preview",width="stretch")
+            st.markdown("### Input imagery")
+            st.image(preview0, caption="AOI / primary true-colour preview", width="stretch")
         if results0.get("answer"):
-            st.markdown("### SatQueryX answer"); st.write(results0["answer"]); st.caption(f"Language provider: {results0.get('provider','unknown')}")
+            st.markdown("### SatQueryX answer")
+            st.write(results0["answer"])
+            st.caption(f"Language provider: {results0.get('provider', 'unknown')}")
         if results0.get("aoi"):
-            a=results0["aoi"]; st.markdown("### AOI & acquisition")
+            a = results0["aoi"]
+            st.markdown("### AOI & acquisition")
             st.write(f"**Location:** {a.get('location') or 'Unavailable'}")
-            st.write(f"**Scene:** {a.get('scene_id','Unavailable')} · **Acquired:** {a.get('datetime','Unavailable')} · **Cloud:** {a.get('cloud_cover','Unavailable')}%")
-            st.write(f"**Bands:** {', '.join(a.get('bands',[]))} · **CRS:** {a.get('crs','Unavailable')}")
-        site=results0.get("site_summary")
+            st.write(f"**Scene:** {a.get('scene_id', 'Unavailable')} · **Acquired:** {a.get('datetime', 'Unavailable')} · **Cloud:** {a.get('cloud_cover', 'Unavailable')}%")
+            st.write(f"**Bands:** {', '.join(a.get('bands', []))} · **CRS:** {a.get('crs', 'Unavailable')}")
+        site = results0.get("site_summary")
         if site:
             st.markdown("### Site intelligence")
-            st.metric("AOI area",f"{site['area_ha']:.3f} ha")
-            st.caption(f"Area basis: {site.get('area_basis','unknown')}")
-            elev=site.get("elevation")
-            if elev: st.write(f"**Elevation:** mean {elev['mean_m']:.1f} m · median {elev['median_m']:.1f} m · range {elev['min_m']:.1f}–{elev['max_m']:.1f} m · relief {elev['relief_m']:.1f} m ({elev['source']})")
-            wc=site.get("worldcover")
+            st.metric("AOI area", f"{site['area_ha']:.3f} ha")
+            st.caption(f"Area basis: {site.get('area_basis', 'unknown')}")
+            elev = site.get("elevation")
+            if elev:
+                st.write(f"**Elevation:** mean {elev['mean_m']:.1f} m · median {elev['median_m']:.1f} m · range {elev['min_m']:.1f}–{elev['max_m']:.1f} m · relief {elev['relief_m']:.1f} m ({elev['source']})")
+            wc = site.get("worldcover")
             if wc:
                 st.markdown("**Land cover (ESA WorldCover 2021 v200)**")
-                for row in wc["rows"]: st.write(f"• {row['label']}: {row['area_ha']:.3f} ha ({row['fraction']:.1%})")
-            b=site.get("buildings")
-            if b: st.write(f"**Mapped buildings:** {b['count']} ({b['source']})")
-            w=site.get("waterways")
-            if w: st.write(f"**Mapped water features:** {w['count']} · types: {', '.join(w['types']) or 'none'} · names: {', '.join(w['names']) or 'unnamed/unavailable'}")
-            for limitation in site.get("limitations",[]): st.warning(limitation)
-        if results0.get("detector_limitation"): st.warning("Image detector limitation: "+results0["detector_limitation"])
+                for row in wc["rows"]:
+                    st.write(f"• {row['label']}: {row['area_ha']:.3f} ha ({row['fraction']:.1%})")
+            b = site.get("buildings")
+            if b:
+                st.write(f"**Mapped buildings:** {b['count']} ({b['source']})")
+            w = site.get("waterways")
+            if w:
+                st.write(f"**Mapped water features:** {w['count']} · types: {', '.join(w['types']) or 'none'} · names: {', '.join(w['names']) or 'unnamed/unavailable'}")
+            for limitation in site.get("limitations", []):
+                st.warning(limitation)
+        if results0.get("detector_limitation"):
+            st.warning("Image detector limitation: " + results0["detector_limitation"])
         if evidence0:
             st.markdown("### Computed evidence")
-            for fact in evidence0.facts: st.write("• "+fact)
-            st.metric("Detector confidence",f"{evidence0.confidence:.0%}" if evidence0.confidence is not None else "Not estimated")
+            for fact in evidence0.facts:
+                st.write("• " + fact)
+            st.metric("Detector confidence", f"{evidence0.confidence:.0%}" if evidence0.confidence is not None else "Not estimated")
         if results0.get("ndvi"):
-            n=results0["ndvi"]; st.markdown("### NDVI"); st.write(f"Mean: {n['mean']:.4f} · Median: {n['median']:.4f} · Vegetated fraction (NDVI > 0.3): {n['vegetated_fraction']:.1%}")
+            n = results0["ndvi"]
+            st.markdown("### NDVI")
+            st.write(f"Mean: {n['mean']:.4f} · Median: {n['median']:.4f} · Vegetated fraction (NDVI > 0.3): {n['vegetated_fraction']:.1%}")
         if results0.get("detections"):
-            st.markdown("### Image detections"); st.image(draw_detections(Image.open(BytesIO(preview0)),results0["detections"]),width="stretch")
+            st.markdown("### Image detections")
+            st.image(draw_detections(Image.open(BytesIO(preview0)), results0["detections"]), width="stretch")
         if results0.get("change_detection"):
-            ch=results0["change_detection"]; st.markdown("### Change detection"); st.write(f"Changed fraction: {ch['changed_fraction']:.2%} · SSIM: {ch['ssim']:.4f} · mean absolute change: {ch['mean_absolute_change']:.4f}")
+            ch = results0["change_detection"]
+            st.markdown("### Change detection")
+            st.write(f"Changed fraction: {ch['changed_fraction']:.2%} · SSIM: {ch['ssim']:.4f} · mean absolute change: {ch['mean_absolute_change']:.4f}")
         try:
-            pdf=build_pdf(query0,results0,evidence0,steps0)
-            st.download_button("📄 Download PDF report",pdf,"satqueryx_report.pdf","application/pdf",width="stretch")
-        except Exception as exc: st.warning(f"PDF report unavailable: {exc}")
+            # build_pdf expects the actual plan, evidence bundle, result dictionary, then preview PNG.
+            if evidence0 is not None:
+                pdf = build_pdf(query0, plan0, evidence0, results0, preview0)
+                st.download_button("📄 Download PDF report", pdf, "satqueryx_report.pdf", "application/pdf", width="stretch")
+        except Exception as exc:
+            st.warning(f"PDF report unavailable: {exc}")
     with right:
         st.header("Execution trace")
-        for step in steps0: st.write(f"**{step.name}** · {step.status} — {step.detail}")
+        for step in steps0:
+            st.write(f"**{step.name}** · {step.status} — {step.detail}")
