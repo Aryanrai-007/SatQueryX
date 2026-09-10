@@ -20,11 +20,13 @@ class SpecialistResult:
     regions: list[dict[str, Any]] | None = None
 
 
-def _vlm() -> RemoteSensingVLM:
-    model_id = os.getenv("REMOTE_VLM_MODEL_ID", "").strip()
+def _vlm(env_name: str = "REMOTE_VLM_MODEL_ID", max_tokens: int = 256) -> RemoteSensingVLM:
+    model_id = os.getenv(env_name, "").strip()
+    if not model_id and env_name != "REMOTE_VLM_MODEL_ID":
+        model_id = os.getenv("REMOTE_VLM_MODEL_ID", "").strip()
     if not model_id:
-        raise RuntimeError("REMOTE_VLM_MODEL_ID is not configured. Configure a domain-adapted SatQueryX checkpoint before using the specialist VLM workflows.")
-    return RemoteSensingVLM(VLMConfig(model_id=model_id, max_new_tokens=int(os.getenv("REMOTE_VLM_MAX_NEW_TOKENS", "256"))))
+        raise RuntimeError(f"{env_name} is not configured. Provide the required domain-adapted checkpoint.")
+    return RemoteSensingVLM(VLMConfig(model_id=model_id, max_new_tokens=max_tokens))
 
 
 def run_single_vqa(image: Image.Image, query: str) -> SpecialistResult:
@@ -40,10 +42,7 @@ def run_captioning(image: Image.Image) -> SpecialistResult:
 
 
 def run_grounding(image: Image.Image, query: str) -> SpecialistResult:
-    model_id = os.getenv("RS_GROUNDING_MODEL_ID", "").strip()
-    if not model_id:
-        raise RuntimeError("RS_GROUNDING_MODEL_ID is not configured. A remote-sensing grounding checkpoint is required for text-guided region grounding.")
-    model = RemoteSensingVLM(VLMConfig(model_id=model_id, max_new_tokens=192))
+    model = _vlm("RS_GROUNDING_MODEL_ID", 192)
     prompt = ('remote sensing referring-expression grounding. Return JSON only in this schema: '
               '{"regions":[{"label":"...","bbox":[x1,y1,x2,y2]}],"answer":"..."}. '
               'Coordinates are normalized 0..1000 relative to the image. Ground only the regions referred to by the query.\n'
@@ -71,17 +70,21 @@ def _pair_canvas(left: Image.Image, right: Image.Image, left_label: str, right_l
 
 
 def run_change_vqa(before: Image.Image, after: Image.Image, query: str) -> SpecialistResult:
-    model = _vlm()
+    env = "RS_CHANGE_VQA_MODEL_ID" if os.getenv("RS_CHANGE_VQA_MODEL_ID") else "REMOTE_VLM_MODEL_ID"
+    model = _vlm(env)
     canvas = _pair_canvas(before, after, "T1 / BEFORE", "T2 / AFTER")
     answer = model.generate(canvas, "remote sensing change visual question answering. Left is T1/before and right is T2/after. Describe only changes supported by both observations.\nQuestion: " + query + "\nAnswer:")
-    return SpecialistResult("change_vqa", answer, model.config.model_id, ["domain-adapted RS-VLM temporal reasoning"], ["Inference uses an explicit T1/T2 labelled pair canvas; a native two-image checkpoint can replace this adapter."])
+    limitation = [] if env == "RS_CHANGE_VQA_MODEL_ID" else ["Native paired-input change checkpoint is not configured; the adapted RS-VLM is receiving an explicit T1/T2 labelled representation."]
+    return SpecialistResult("change_vqa", answer, model.config.model_id, ["domain-adapted RS-VLM temporal reasoning"], limitation)
 
 
 def run_optical_sar(image_optical: Image.Image, image_sar: Image.Image, query: str) -> SpecialistResult:
-    model = _vlm()
+    env = "RS_MULTIMODAL_MODEL_ID" if os.getenv("RS_MULTIMODAL_MODEL_ID") else "REMOTE_VLM_MODEL_ID"
+    model = _vlm(env)
     canvas = _pair_canvas(image_optical, image_sar, "OPTICAL", "SAR")
     answer = model.generate(canvas, "remote sensing cross-modal reasoning. Left is OPTICAL and right is SAR. Use complementary spectral/contextual and radar structural evidence. Do not invent precise class areas unless computed evidence supplies them.\nQuestion: " + query + "\nAnswer:")
-    return SpecialistResult("optical_sar", answer, model.config.model_id, ["domain-adapted RS-VLM cross-modal reasoning"], ["Inference uses a labelled optical/SAR joint canvas; a native dual-encoder checkpoint can replace this adapter."])
+    limitation = [] if env == "RS_MULTIMODAL_MODEL_ID" else ["Native dual-encoder optical/SAR checkpoint is not configured; the adapted RS-VLM is receiving an explicit labelled joint representation."]
+    return SpecialistResult("optical_sar", answer, model.config.model_id, ["domain-adapted RS-VLM cross-modal reasoning"], limitation)
 
 
 def image_from_array(array: np.ndarray) -> Image.Image:
