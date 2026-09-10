@@ -183,7 +183,9 @@ def main() -> None:
         per_device_eval_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.learning_rate,
-        warmup_ratio=0.03,
+        # Transformers 5.x accepts a float warmup_steps value as a ratio;
+        # the legacy warmup_ratio argument was removed.
+        warmup_steps=0.03,
         weight_decay=0.01,
         logging_steps=10,
         eval_strategy="steps",
