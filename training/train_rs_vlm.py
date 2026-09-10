@@ -70,6 +70,27 @@ class WrappedDataset:
         }
 
 
+def close_lmdb_dataset(dataset) -> None:
+    """Close an official BigEarthNet LMDB environment before opening the same path again.
+
+    py-lmdb 2.x rejects opening the same environment path twice in one process.
+    Trainer's training dataset remains referenced after training, so explicit
+    validation must close that environment before the validation dataset opens it.
+    This helper unwraps torch.utils.data.Subset and WrappedDataset instances and
+    closes the official loader's lazily-created image-reader environment.
+    """
+    current = dataset
+    while hasattr(current, "raw"):
+        current = current.raw
+    if hasattr(current, "dataset") and not hasattr(current, "image_reader"):
+        current = current.dataset
+    image_reader = getattr(current, "image_reader", None)
+    env = getattr(image_reader, "env", None)
+    if env is not None:
+        env.close()
+        image_reader.env = None
+
+
 def evaluate_loss(model, dataset, collate_fn, torch_module, batch_size: int) -> float:
     """Run explicit multimodal validation outside Trainer's generic eval loop.
 
@@ -221,14 +242,9 @@ def main() -> None:
         per_device_train_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.learning_rate,
-        # Transformers 5.x accepts a float warmup_steps value as a ratio;
-        # the legacy warmup_ratio argument was removed.
         warmup_steps=0.03,
         weight_decay=0.01,
         logging_steps=10,
-        # Do not use Trainer's generic multimodal evaluation loop. It can
-        # re-enter the custom LMDB dataset incompatibly under Transformers 5.x.
-        # Validation is run explicitly below with the same tested collator.
         eval_strategy="no",
         save_strategy="steps",
         save_steps=250,
@@ -248,6 +264,11 @@ def main() -> None:
     )
     print(f"Training samples: {len(train_ds)} | validation samples: {len(val_ds)}")
     trainer.train()
+
+    # The training dataset has lazily opened the shared LMDB environment.
+    # py-lmdb 2.x intentionally rejects a second open of the same path in the
+    # same process, so close the training environment before validation opens it.
+    close_lmdb_dataset(train_ds)
 
     print("Running explicit validation...")
     val_loss = evaluate_loss(
