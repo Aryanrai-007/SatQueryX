@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  --background: #050b10;
+  --foreground: #e8f6fa;
+}
+
+* { box-sizing: border-box; }
+html, body { min-height: 100%; }
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 15% -10%, rgba(34,211,238,.12), transparent 30%),
+    radial-gradient(circle at 90% 20%, rgba(56,189,248,.06), transparent 25%),
+    #050b10;
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+::selection { background: rgba(34,211,238,.25); color: white; }
+
+.glass {
+  background: linear-gradient(135deg, rgba(12,25,35,.88), rgba(7,15,22,.72));
+  border: 1px solid rgba(148,163,184,.13);
+  box-shadow: 0 24px 70px rgba(0,0,0,.24);
+  backdrop-filter: blur(18px);
+}
+
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(148,163,184,.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148,163,184,.035) 1px, transparent 1px);
+  background-size: 36px 36px;
+}
+
+.scanline::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(180deg, transparent, transparent 5px, rgba(255,255,255,.012) 6px);
+  mix-blend-mode: screen;
+}
+
+.leaflet-container { font: inherit; background: #071018; }
+.leaflet-control-attribution { font-size: 8px !important; background: rgba(4,10,15,.78) !important; color: #8da0ad !important; }
+.leaflet-control-attribution a { color: #67e8f9 !important; }
+
+@keyframes pulse-ring { 0%, 100% { opacity: .35; transform: scale(.96); } 50% { opacity: .8; transform: scale(1.02); } }
+.animate-ring { animation: pulse-ring 2.2s ease-in-out infinite; }
+
+@keyframes scan { 0% { transform: translateY(-110%); } 100% { transform: translateY(110%); } }
+.scan-beam { animation: scan 5s linear infinite; }
