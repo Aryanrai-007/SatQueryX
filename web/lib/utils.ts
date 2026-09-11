@@ -29,14 +29,53 @@ export async function imageDataUrl(file: File) {
   return null;
 }
 
+export async function inspectImage(file: File) {
+  const dataUrl = await imageDataUrl(file);
+  if (!dataUrl) return null;
+  const image = await loadImage(dataUrl);
+  const canvas = document.createElement("canvas");
+  const width = 256;
+  const height = 256;
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return null;
+  context.drawImage(image, 0, 0, width, height);
+  const pixels = context.getImageData(0, 0, width, height).data;
+  let sum = 0;
+  let sumSq = 0;
+  let red = 0;
+  let green = 0;
+  let blue = 0;
+  const count = width * height;
+  for (let i = 0; i < pixels.length; i += 4) {
+    red += pixels[i];
+    green += pixels[i + 1];
+    blue += pixels[i + 2];
+    const luminance = (0.2126 * pixels[i] + 0.7152 * pixels[i + 1] + 0.0722 * pixels[i + 2]) / 255;
+    sum += luminance;
+    sumSq += luminance * luminance;
+  }
+  const meanBrightness = sum / count;
+  const variance = Math.max(0, sumSq / count - meanBrightness ** 2);
+  return {
+    width: image.naturalWidth,
+    height: image.naturalHeight,
+    meanBrightness,
+    contrast: Math.sqrt(variance),
+    channelMeans: {
+      red: red / count / 255,
+      green: green / count / 255,
+      blue: blue / count / 255,
+    },
+  };
+}
+
 export async function compareImages(a: File, b: File) {
   const [aUrl, bUrl] = await Promise.all([imageDataUrl(a), imageDataUrl(b)]);
   if (!aUrl || !bUrl) return null;
 
-  const [ia, ib] = await Promise.all([
-    loadImage(aUrl),
-    loadImage(bUrl),
-  ]);
+  const [ia, ib] = await Promise.all([loadImage(aUrl), loadImage(bUrl)]);
   const width = 256;
   const height = 256;
   const ca = document.createElement("canvas");
