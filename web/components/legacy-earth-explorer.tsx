@@ -30,7 +30,7 @@ export function LegacyEarthExplorer({ open, onClose, onSelect }: { open: boolean
       <div className="flex items-center gap-2"><span className="hidden text-[9px] uppercase tracking-widest text-cyan-300/70 md:block">LIVE SPATIAL WORKSPACE</span><button className="btn btn--ghost btn--sm" onClick={onClose}><X size={15}/></button></div>
     </header>
     <div className="relative z-0 grid min-h-0 flex-1 lg:grid-cols-[1fr_310px]">
-      <div className="relative min-h-0 overflow-hidden"><ExplorerMap center={center} onCenterChange={c=>{setCenter(c);onSelect(c[0],c[1])}} drawing={drawing} onRoi={setRoi}/>
+      <div className="relative min-h-0 overflow-hidden"><ExplorerMap center={center} onCenterChange={c=>{setCenter(c);onSelect(c[0],c[1])}} drawing={drawing} onRoi={setRoi} satellite={satellite}/>
         <div className="absolute left-4 top-4 z-30 flex max-w-[min(520px,calc(100%-32px))] flex-wrap gap-2">
           <div className="glass flex items-center gap-2 rounded-lg px-3 py-2"><Search size={13} className="text-cyan-300"/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search sector…" className="w-44 bg-transparent text-xs text-white outline-none"/></div>
           <button onClick={()=>setDrawing(!drawing)} className={`btn btn--sm ${drawing ? "btn--primary" : "btn--secondary"}`}><Crosshair size={12}/>{drawing ? "Finish ROI" : "Draw ROI"}</button>
