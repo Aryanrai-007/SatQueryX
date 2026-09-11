@@ -1,4 +1,5 @@
 .env
+.env.local
 .venv/
 __pycache__/
 *.py[cod]
@@ -11,3 +12,8 @@ models/
 *.safetensors
 *.onnx
 .DS_Store
+
+# Next.js demo console
+web/.next/
+web/node_modules/
+web/.vercel/
