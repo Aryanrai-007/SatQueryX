@@ -1,159 +1,45 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
-import { Activity, AlertTriangle, Bot, CheckCircle2, CircleDot, Download, Gauge, Layers3, MapPinned, Radar, RefreshCw, Satellite, ScanSearch, Send, Settings2, Sparkles, Target, Upload, Zap } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { compareImages, formatBytes, imageDataUrl } from "@/lib/utils";
-import type { Snippet } from "@/components/aoi-map";
-
-const AOIMap = dynamic(() => import("@/components/aoi-map"), { ssr: false });
-
-type Modality = "optical" | "sar";
-type Provider = "openrouter" | "gemini";
-type Tab = "evidence" | "trace" | "metrics" | "report";
-type StepStatus = "queued" | "running" | "done" | "error" | "waiting";
-type Step = { id: string; title: string; detail: string; status: StepStatus };
-type FileState = { file: File | null; preview: string | null; modality: Modality };
+import { Activity, Database, Download, Globe2, Radar, Satellite, ShieldCheck, Target, Zap } from "lucide-react";
+import { UploadPanel } from "@/components/mission/upload-panel";
+import { QueryPanel } from "@/components/mission/query-panel";
+import { MissionViewer } from "@/components/mission/mission-viewer";
+import { ResultPanel } from "@/components/mission/result-panel";
+import { EvidencePanel } from "@/components/mission/evidence-panel";
+import { StatusStrip } from "@/components/mission/status-strip";
+import { StepList } from "@/components/mission/step-list";
+import { AuditModal } from "@/components/mission/audit-modal";
+import { ChatBot } from "@/components/mission/chatbot";
+import { LegacyEarthExplorer } from "@/components/legacy-earth-explorer";
+import type { FileState, Modality, Provider, Step, StepStatus } from "@/components/mission/types";
+import { compareImages, imageDataUrl } from "@/lib/utils";
 
 const INITIAL_STEPS: Step[] = [
-  { id: "validate", title: "Validate inputs", detail: "Waiting for mission imagery", status: "queued" },
-  { id: "intent", title: "Interpret query", detail: "Waiting for natural-language request", status: "queued" },
-  { id: "route", title: "Select specialist", detail: "Agentic workflow routing", status: "queued" },
-  { id: "vision", title: "Visual analysis", detail: "Waiting for vision-capable model", status: "queued" },
-  { id: "evidence", title: "Build evidence", detail: "Waiting for observations", status: "queued" },
-  { id: "synthesis", title: "Synthesize answer", detail: "Waiting for language layer", status: "queued" },
-  { id: "audit", title: "Write audit trace", detail: "Waiting for execution", status: "queued" },
+  { id:"validate", title:"Validate inputs", detail:"Waiting for mission imagery", status:"queued" },
+  { id:"intent", title:"Interpret query", detail:"Waiting for natural-language request", status:"queued" },
+  { id:"route", title:"Select specialist", detail:"Agentic workflow routing", status:"queued" },
+  { id:"vision", title:"Visual analysis", detail:"Waiting for vision-capable model", status:"queued" },
+  { id:"evidence", title:"Build evidence", detail:"Waiting for observations", status:"queued" },
+  { id:"synthesis", title:"Synthesize answer", detail:"Waiting for language layer", status:"queued" },
+  { id:"audit", title:"Write audit trace", detail:"Waiting for execution", status:"queued" },
 ];
+const wait=(ms:number)=>new Promise(r=>setTimeout(r,ms));
+function workflowFor(q:string, second:boolean, modality:Modality){const x=q.toLowerCase();if(second&&/change|before|after|compare/.test(x))return "Bi-temporal change understanding";if(second&&(x.includes("sar")||modality==="sar"))return "Optical + SAR complementarity";if(/where|locate|bounding|region|ground/.test(x))return "Text-guided visual grounding";if(/caption|describe/.test(x))return "Scene captioning";return "Single-image visual question answering";}
 
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function workflowFor(query: string, hasSecond: boolean, secondaryModality: Modality) {
-  const q = query.toLowerCase();
-  if (hasSecond && /change|before|after|compare/.test(q)) return "Bi-temporal change understanding";
-  if (hasSecond && (q.includes("sar") || secondaryModality === "sar")) return "Optical + SAR complementarity";
-  if (/where|locate|bounding|region|ground/.test(q)) return "Text-guided visual grounding";
-  if (/caption|describe/.test(q)) return "Scene captioning";
-  return "Single-image visual question answering";
-}
-
-function Stat({ label, value, icon: Icon }: { label: string; value: string; icon: typeof Activity }) {
-  return <div className="rounded-xl border border-white/8 bg-white/[0.025] px-3 py-3"><div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.16em] text-slate-500"><Icon size={12} />{label}</div><div className="mt-1 truncate text-sm font-semibold text-slate-100">{value}</div></div>;
-}
-
-function FileCard({ state, title, onChange, onModality }: { state: FileState; title: string; onChange: (file: File | null) => void; onModality: (modality: Modality) => void }) {
-  return <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
-    <div className="mb-2 flex items-center justify-between"><span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">{title}</span><Badge>{state.file ? state.modality.toUpperCase() : "EMPTY"}</Badge></div>
-    <label className="group relative flex min-h-[175px] cursor-pointer items-center justify-center overflow-hidden rounded-xl border border-dashed border-white/10 bg-slate-950/70 transition hover:border-cyan-300/30">
-      {state.preview ? <img src={state.preview} alt="uploaded satellite image" className="absolute inset-0 h-full w-full object-cover opacity-90" /> : <div className="text-center"><Upload className="mx-auto mb-3 text-slate-600" size={25}/><p className="text-xs text-slate-400">Upload optical / SAR image</p><p className="mt-1 text-[10px] text-slate-600">GeoTIFF · TIFF · PNG · JPEG</p></div>}
-      <input type="file" accept=".tif,.tiff,.png,.jpg,.jpeg,image/*" className="hidden" onChange={(e) => onChange(e.target.files?.[0] ?? null)} />
-      {state.file && <div className="absolute inset-x-2 bottom-2 rounded-lg border border-white/10 bg-slate-950/90 p-2 backdrop-blur"><div className="truncate text-[11px] text-white">{state.file.name}</div><div className="mt-1 text-[9px] text-slate-500">{formatBytes(state.file.size)} · {state.file.type || "raster"}</div></div>}
-    </label>
-    <div className="mt-2 grid grid-cols-2 gap-2">
-      <button type="button" onClick={() => onModality("optical")} className={`rounded-lg border px-2 py-1.5 text-[10px] ${state.modality === "optical" ? "border-cyan-300/30 bg-cyan-300/10 text-cyan-100" : "border-white/8 text-slate-500"}`}><Satellite size={11} className="mr-1 inline"/>Optical</button>
-      <button type="button" onClick={() => onModality("sar")} className={`rounded-lg border px-2 py-1.5 text-[10px] ${state.modality === "sar" ? "border-cyan-300/30 bg-cyan-300/10 text-cyan-100" : "border-white/8 text-slate-500"}`}><Radar size={11} className="mr-1 inline"/>SAR</button>
-    </div>
-  </div>;
-}
-
-function StepList({ steps }: { steps: Step[] }) {
-  return <div className="space-y-1">{steps.map((step, index) => <div key={step.id} className="flex gap-3"><div className="flex flex-col items-center"><div className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border ${step.status === "done" ? "border-cyan-300/30 bg-cyan-300/10 text-cyan-200" : step.status === "running" ? "border-amber-300/30 bg-amber-300/10 text-amber-200 animate-pulse" : step.status === "error" ? "border-red-300/30 bg-red-300/10 text-red-200" : step.status === "waiting" ? "border-violet-300/30 bg-violet-300/10 text-violet-200" : "border-white/10 bg-white/[0.02] text-slate-600"}`}>{step.status === "done" ? <CheckCircle2 size={14}/> : step.status === "error" ? <AlertTriangle size={14}/> : step.status === "waiting" ? <CircleDot size={14}/> : <span className="text-[9px]">{index + 1}</span>}</div>{index < steps.length - 1 && <div className="h-full min-h-5 w-px bg-white/8"/>}</div><div className="pb-3"><div className="text-xs font-medium text-slate-200">{step.title}</div><div className="text-[10px] leading-4 text-slate-500">{step.detail}</div></div></div>)}</div>;
-}
-
-export default function Home() {
-  const [primary, setPrimary] = useState<FileState>({ file: null, preview: null, modality: "optical" });
-  const [secondary, setSecondary] = useState<FileState>({ file: null, preview: null, modality: "sar" });
-  const [query, setQuery] = useState("What major land-cover characteristics are visible in this scene?");
-  const [provider, setProvider] = useState<Provider>("openrouter");
-  const [steps, setSteps] = useState<Step[]>(INITIAL_STEPS);
-  const [running, setRunning] = useState(false);
-  const [answer, setAnswer] = useState("");
-  const [model, setModel] = useState("");
-  const [error, setError] = useState("");
-  const [aiConfigured, setAiConfigured] = useState<boolean | null>(null);
-  const [tab, setTab] = useState<Tab>("evidence");
-  const [center, setCenter] = useState<[number, number]>([28.6139, 77.209]);
-  const [snippet, setSnippet] = useState<Snippet | null>(null);
-  const [changeStats, setChangeStats] = useState<{ changedFraction: number; meanDifference: number } | null>(null);
-  const [lastWorkflow, setLastWorkflow] = useState("Ready for mission");
-  const [lastRunAt, setLastRunAt] = useState("");
-
-  const hasSecond = Boolean(secondary.file);
-  const workflow = useMemo(() => workflowFor(query, hasSecond, secondary.modality), [query, hasSecond, secondary.modality]);
-  const evidenceCoverage = answer ? (hasSecond ? 92 : 86) : changeStats ? 61 : snippet ? 48 : 0;
-
-  async function loadFile(file: File | null, target: "primary" | "secondary") {
-    const preview = file ? await imageDataUrl(file) : null;
-    if (target === "primary") setPrimary({ file, preview, modality: primary.modality });
-    else setSecondary({ file, preview, modality: secondary.modality });
-  }
-
-  async function runAnalysis() {
-    if (!primary.file || !query.trim()) return;
-    setRunning(true); setAnswer(""); setError(""); setTab("trace"); setLastWorkflow(workflow); setAiConfigured(null);
-    setSteps(INITIAL_STEPS.map((s) => ({ ...s })));
-    const setStep = (index: number, status: StepStatus, detail?: string) => setSteps((current) => current.map((s, i) => i === index ? { ...s, status, detail: detail ?? s.detail } : s));
-    try {
-      setStep(0, "running", "Checking image count, file format and modality compatibility"); await wait(220);
-      const primaryUrl = await imageDataUrl(primary.file);
-      const secondaryUrl = secondary.file ? await imageDataUrl(secondary.file) : null;
-      setStep(0, "done", `${primary.file.name}${secondary.file ? ` + ${secondary.file.name}` : ""}`); await wait(100);
-      setStep(1, "running", `Detected intent: ${workflow}`); await wait(220); setStep(1, "done", `Intent mapped to ${workflow}`); await wait(100);
-      setStep(2, "running", "Selecting permitted specialist workflow and tools"); await wait(220); setStep(2, "done", workflow); await wait(100);
-
-      let stats = null;
-      if (secondary.file && workflow.includes("change")) stats = await compareImages(primary.file, secondary.file);
-      setChangeStats(stats);
-      const observations = { image_count: secondary.file ? 2 : 1, modalities: [primary.modality, secondary.file ? secondary.modality : null].filter(Boolean), aoi_center: center, map_snippet: snippet, deterministic_change: stats ? { changed_fraction: stats.changedFraction, mean_difference: stats.meanDifference } : null, note: "Browser layer performs orchestration and lightweight evidence measurements. Remote-sensing specialist checkpoints remain swappable backend components." };
-
-      setStep(3, "running", "Connecting to configured multimodal language layer");
-      const response = await fetch("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider, query, workflow, primary: { name: primary.file.name, modality: primary.modality, dataUrl: primaryUrl }, secondary: secondary.file ? { name: secondary.file.name, modality: secondary.modality, dataUrl: secondaryUrl } : null, observations }) });
-      const data = await response.json();
-      setAiConfigured(Boolean(data.configured));
-
-      if (data.configured && data.answer) {
-        setStep(3, "done", `${data.provider} · ${data.model}`);
-        await wait(100); setStep(4, "running", "Combining model output with deterministic mission observations"); await wait(180); setStep(4, "done", stats ? `Change statistic computed · ${(stats.changedFraction * 100).toFixed(1)}% above threshold` : "Visual evidence ledger assembled");
-        await wait(100); setStep(5, "running", "Generating grounded natural-language explanation"); await wait(180); setAnswer(data.answer); setModel(data.model); setStep(5, "done", "Evidence synthesis complete");
-      } else {
-        setStep(3, "waiting", data.message || "AI provider key is not configured.");
-        setStep(4, "done", stats ? `Local evidence computed · ${(stats.changedFraction * 100).toFixed(1)}% changed fraction` : "Local mission evidence captured");
-        setStep(5, "waiting", "Add an API key to enable the language answer. SatQueryX will not fabricate one.");
-      }
-      setStep(6, "done", "Audit trace recorded · workflow, evidence and configuration state captured");
-      setTab("evidence"); setLastRunAt(new Date().toLocaleTimeString());
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "Unknown analysis error.";
-      setError(message); setStep(3, "error", message); setStep(6, "done", "Partial trace preserved"); setTab("trace");
-    } finally { setRunning(false); }
-  }
-
-  function downloadReport() {
-    const report = `SATQUERYX MISSION REPORT\n\nWorkflow: ${lastWorkflow}\nQuery: ${query}\nPrimary: ${primary.file?.name ?? "none"}\nSecondary: ${secondary.file?.name ?? "none"}\nPrimary modality: ${primary.modality}\nSecondary modality: ${secondary.file ? secondary.modality : "none"}\nAOI centre: ${center[0].toFixed(5)}, ${center[1].toFixed(5)}\nMap snippet: ${snippet ? JSON.stringify(snippet) : "none"}\nProvider: ${provider}\nModel: ${model || "not configured / not run"}\nAI configured: ${aiConfigured === null ? "unknown" : aiConfigured}\n\nANSWER\n${answer || "No language-model answer was generated. The evidence layer completed without fabricating a response."}\n\nCHANGE METRICS\n${changeStats ? `Changed fraction: ${(changeStats.changedFraction * 100).toFixed(2)}%\nMean difference: ${changeStats.meanDifference.toFixed(4)}` : "Not computed"}`;
-    const blob = new Blob([report], { type: "text/plain;charset=utf-8" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "satqueryx-mission-report.txt"; a.click(); URL.revokeObjectURL(url);
-  }
-
-  return <main className="min-h-screen grid-bg"><div className="mx-auto max-w-[1680px] px-4 py-4 lg:px-7">
-    <header className="glass relative overflow-hidden rounded-3xl p-5 lg:p-6"><div className="absolute -right-20 -top-24 h-64 w-64 rounded-full bg-cyan-400/10 blur-3xl"/><div className="relative flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between"><div><div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.24em] text-cyan-300"><span className="h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_15px_rgba(34,211,238,.9)]"/>Remote sensing intelligence console</div><h1 className="mt-2 text-3xl font-semibold tracking-[-0.04em] text-white lg:text-4xl">SatQuery<span className="text-cyan-300">X</span></h1><p className="mt-1 max-w-4xl text-sm text-slate-400">Interactive vision-language analysis for optical, SAR and bi-temporal satellite imagery — orchestrated through natural language.</p></div><div className="flex flex-wrap gap-2"><Badge><Zap size={11}/>Agentic orchestration</Badge><Badge><Radar size={11}/>Optical + SAR</Badge><Badge><RefreshCw size={11}/>Bi-temporal change</Badge><Badge><Target size={11}/>Traceable evidence</Badge></div></div></header>
-
-    <section className="mt-5"><div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-300"><MapPinned size={13}/>Primary mission surface</div><h2 className="mt-1 text-xl font-semibold text-white">Area of Interest & Map Snippet</h2><p className="text-xs text-slate-500">This is the main interaction surface. Pan the map, reposition the centre, or trace the exact image snippet you want the agent to reason about.</p></div><div className="flex items-center gap-2 text-[10px] text-slate-500"><span className="h-2 w-2 rounded-full bg-emerald-400"/>Map online · OpenStreetMap tiles</div></div><AOIMap center={center} onCenterChange={setCenter} onSnippetChange={setSnippet}/><div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><Stat label="Centre" value={`${center[0].toFixed(4)}, ${center[1].toFixed(4)}`} icon={MapPinned}/><Stat label="Snippet" value={snippet ? `${snippet.type} · ${snippet.coordinates.length} pts` : "Not selected"} icon={ScanSearch}/><Stat label="Workflow" value={workflow.replace(" understanding", "")} icon={Bot}/><Stat label="Last run" value={lastRunAt || "Ready"} icon={Activity}/></div></section>
-
-    <section className="mt-5 grid gap-5 xl:grid-cols-[1.65fr_.85fr]"><div className="space-y-5">
-      <Card className="border-white/10 bg-white/[0.025]"><CardHeader><CardTitle className="flex items-center gap-2"><Layers3 size={18} className="text-cyan-300"/>Mission imagery</CardTitle><CardDescription>One image enables VQA, captioning and grounding. A second image enables temporal or optical-SAR analysis.</CardDescription></CardHeader><CardContent><div className="grid gap-4 lg:grid-cols-2"><FileCard title="Primary observation" state={primary} onChange={(f) => void loadFile(f, "primary")} onModality={(m) => setPrimary((s) => ({ ...s, modality: m }))}/><FileCard title="Secondary observation" state={secondary} onChange={(f) => void loadFile(f, "secondary")} onModality={(m) => setSecondary((s) => ({ ...s, modality: m }))}/></div></CardContent></Card>
-      <Card className="border-cyan-300/15 bg-cyan-300/[0.025]"><CardHeader><CardTitle className="flex items-center gap-2"><Sparkles size={18} className="text-cyan-300"/>Natural-language mission query</CardTitle><CardDescription>Intent is interpreted first; then the controller chooses the specialist workflow.</CardDescription></CardHeader><CardContent><textarea value={query} onChange={(e) => setQuery(e.target.value)} className="min-h-[104px] w-full resize-none rounded-2xl border border-white/10 bg-black/30 p-4 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-300/30" placeholder="Ask about land cover, objects, change, or complementary optical/SAR information…"/><div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex flex-wrap gap-2"><button type="button" onClick={() => setQuery("What major land-cover characteristics are visible in this scene?")} className="rounded-full border border-white/8 px-3 py-1.5 text-[10px] text-slate-400 hover:text-white">VQA</button><button type="button" onClick={() => setQuery("Describe this remote-sensing scene using only visible evidence.")} className="rounded-full border border-white/8 px-3 py-1.5 text-[10px] text-slate-400 hover:text-white">Caption</button><button type="button" onClick={() => setQuery("Compare the two observations and describe the major visible changes.")} className="rounded-full border border-white/8 px-3 py-1.5 text-[10px] text-slate-400 hover:text-white">Change</button><button type="button" onClick={() => setQuery("What complementary information does the SAR observation provide?")} className="rounded-full border border-white/8 px-3 py-1.5 text-[10px] text-slate-400 hover:text-white">Optical + SAR</button></div><Button disabled={!primary.file || running} onClick={() => void runAnalysis()} className="min-w-[170px]"><Send size={15}/>{running ? "Running…" : "Run analysis"}</Button></div></CardContent></Card>
-    </div>
-
-    <aside className="space-y-5"><Card className="border-white/10 bg-white/[0.025]"><CardHeader><CardTitle className="flex items-center gap-2"><Settings2 size={17} className="text-cyan-300"/>AI connection</CardTitle><CardDescription>Keys remain server-side. Add them later; the rest of the console remains interactive now.</CardDescription></CardHeader><CardContent><div className="grid gap-2"><label className={`rounded-xl border p-3 ${provider === "openrouter" ? "border-cyan-300/25 bg-cyan-300/[0.06]" : "border-white/8"}`}><input type="radio" name="provider" checked={provider === "openrouter"} onChange={() => setProvider("openrouter")} className="mr-2"/>OpenRouter</label><label className={`rounded-xl border p-3 ${provider === "gemini" ? "border-cyan-300/25 bg-cyan-300/[0.06]" : "border-white/8"}`}><input type="radio" name="provider" checked={provider === "gemini"} onChange={() => setProvider("gemini")} className="mr-2"/>Gemini</label></div>{aiConfigured === false && <div className="mt-3 rounded-xl border border-amber-300/20 bg-amber-300/[0.05] p-3 text-[11px] leading-5 text-amber-100">AI key not configured. Map, upload, routing, local evidence and audit trace still work. Add the key in <code>web/.env.local</code> for the language answer.</div>}{aiConfigured === true && <div className="mt-3 rounded-xl border border-emerald-300/20 bg-emerald-300/[0.05] p-3 text-[11px] text-emerald-100">AI connection active · {model}</div>}</CardContent></Card><Card className="border-white/10 bg-white/[0.025]"><CardHeader><CardTitle className="flex items-center gap-2"><Bot size={17} className="text-cyan-300"/>Agent execution</CardTitle><CardDescription>Every run leaves an auditable trace.</CardDescription></CardHeader><CardContent><StepList steps={steps}/></CardContent></Card></aside></section>
-
-    <section className="mt-5"><Card className="overflow-hidden border-white/10 bg-white/[0.025]"><div className="flex flex-wrap border-b border-white/8 px-2 pt-2">{([['evidence','Evidence'],['trace','Agent trace'],['metrics','Metrics'],['report','Report']] as [Tab,string][]).map(([id,label]) => <button key={id} onClick={() => setTab(id)} className={`rounded-t-xl px-4 py-3 text-[10px] font-bold uppercase tracking-[0.16em] ${tab === id ? "bg-white/[0.05] text-cyan-200" : "text-slate-500 hover:text-slate-300"}`}>{label}</button>)}</div><CardContent className="min-h-[230px] pt-5">
-      {tab === "evidence" && <div className="grid gap-4 lg:grid-cols-[1.3fr_.7fr]"><div className="rounded-2xl border border-cyan-300/15 bg-cyan-300/[0.035] p-5"><div className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">Answer / system state</div>{answer ? <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-slate-100">{answer}</p> : <p className="mt-3 text-sm leading-6 text-slate-300">{error ? error : aiConfigured === false ? "Local evidence collection completed. No language-model answer was generated because the selected API key is not configured." : "Run a mission to populate the evidence ledger and answer."}</p>}</div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1"><Stat label="Evidence coverage" value={`${evidenceCoverage}%`} icon={Gauge}/><Stat label="AI model" value={model || "Not configured"} icon={Bot}/><Stat label="AOI snippet" value={snippet ? "Captured" : "None"} icon={ScanSearch}/></div></div>}
-      {tab === "trace" && <div className="grid gap-4 lg:grid-cols-2"><StepList steps={steps}/><div className="rounded-2xl border border-white/8 bg-black/20 p-4"><div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Execution contract</div><pre className="mt-3 overflow-auto text-[11px] leading-6 text-slate-400">{JSON.stringify({workflow,lastWorkflow,provider,primary:primary.file?.name ?? null,secondary:secondary.file?.name ?? null,modalities:[primary.modality,secondary.file ? secondary.modality : null].filter(Boolean),aoi:center,map_snippet:snippet,change_metrics:changeStats}, null, 2)}</pre></div></div>}
-      {tab === "metrics" && <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><Stat label="Changed fraction" value={changeStats ? `${(changeStats.changedFraction * 100).toFixed(2)}%` : "—"} icon={RefreshCw}/><Stat label="Mean difference" value={changeStats ? changeStats.meanDifference.toFixed(4) : "—"} icon={Activity}/><Stat label="Primary sensor" value={primary.modality.toUpperCase()} icon={Satellite}/><Stat label="Secondary sensor" value={secondary.file ? secondary.modality.toUpperCase() : "—"} icon={Radar}/></div>}
-      {tab === "report" && <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between"><div><div className="text-sm font-semibold text-white">Download mission audit</div><p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500">Exports the query, workflow, modalities, AOI/snippet, deterministic measurements, AI configuration state and answer without inventing missing model evidence.</p></div><Button onClick={downloadReport}><Download size={15}/>Download report</Button></div>}
-    </CardContent></Card></section>
-
-    <footer className="mt-5 flex flex-col gap-2 border-t border-white/8 py-5 text-[10px] text-slate-600 sm:flex-row sm:items-center sm:justify-between"><span>SatQueryX · internal-round intelligence console</span><span>GeoTIFF/TIFF supported by the backend · PNG/JPEG for visual web inputs · no fabricated evidence</span></footer>
-  </div></main>;
+export default function Home(){
+  const [primary,setPrimary]=useState<FileState>({file:null,preview:null,modality:"optical"});
+  const [secondary,setSecondary]=useState<FileState>({file:null,preview:null,modality:"sar"});
+  const [query,setQuery]=useState("What major land-cover characteristics are visible in this scene?");
+  const [provider,setProvider]=useState<Provider>("openrouter");
+  const [steps,setSteps]=useState<Step[]>(INITIAL_STEPS);
+  const [result,setResult]=useState<any>(null); const [answer,setAnswer]=useState(""); const [model,setModel]=useState("");
+  const [ai,setAi]=useState<boolean|null>(null); const [error,setError]=useState("");
+  const [center,setCenter]=useState<[number,number]>([28.6139,77.209]); const [snippet,setSnippet]=useState<any>(null);
+  const [changeStats,setChangeStats]=useState<any>(null); const [audit,setAudit]=useState<any[]>([]); const [showAudit,setShowAudit]=useState(false); const [showEarth,setShowEarth]=useState(false); const [running,setRunning]=useState(false);
+  const workflow=useMemo(()=>workflowFor(query,Boolean(secondary.file),secondary.modality),[query,secondary.file,secondary.modality]);
+  async function load(file:File|null,target:"primary"|"secondary"){const preview=file?await imageDataUrl(file):null;const next={file,preview,modality:target==="primary"?primary.modality:secondary.modality};target==="primary"?setPrimary(next):setSecondary(next);if(target==="primary"){setResult(null);setAnswer("");setChangeStats(null)}}
+  async function runAnalysis(){if(!primary.file||!query.trim())return;setRunning(true);setError("");setAnswer("");setResult(null);setAi(null);setSteps(INITIAL_STEPS.map(s=>({...s})));const step=(i:number,status:StepStatus,detail?:string)=>setSteps(s=>s.map((x,k)=>k===i?{...x,status,detail:detail??x.detail}:x));try{step(0,"running","Checking image count, format, modality and compatibility");await wait(180);const pUrl=await imageDataUrl(primary.file);const sUrl=secondary.file?await imageDataUrl(secondary.file):null;step(0,"done",`${primary.file.name}${secondary.file?` + ${secondary.file.name}`:""}`);step(1,"running",`Detected intent: ${workflow}`);await wait(180);step(1,"done",workflow);step(2,"running","Selecting specialist and evidence tools");await wait(180);step(2,"done",workflow);let stats=null;if(secondary.file&&workflow.includes("change"))stats=await compareImages(primary.file,secondary.file);setChangeStats(stats);const observations={image_count:secondary.file?2:1,modalities:[primary.modality,secondary.file?secondary.modality:null].filter(Boolean),aoi_center:center,map_snippet:snippet,deterministic_change:stats?{changed_fraction:stats.changedFraction,mean_difference:stats.meanDifference}:null};step(3,"running","Executing configured multimodal reasoning layer");const response=await fetch("/api/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider,query,workflow,primary:{name:primary.file.name,modality:primary.modality,dataUrl:pUrl},secondary:secondary.file?{name:secondary.file.name,modality:secondary.modality,dataUrl:sUrl}:null,observations})});const data=await response.json();setAi(Boolean(data.configured));if(data.configured&&data.answer){step(3,"done",`${data.provider} · ${data.model}`);step(4,"running","Combining model output with deterministic observations");await wait(160);step(4,"done",stats?`${(stats.changedFraction*100).toFixed(1)}% changed fraction computed`:"Evidence ledger assembled");step(5,"running","Generating grounded mission explanation");await wait(160);setAnswer(data.answer);setModel(data.model||"");setResult(data);step(5,"done","Evidence synthesis complete")}else{step(3,"waiting",data.message||"AI provider is not configured");step(4,"done",stats?"Local change evidence computed":"Local mission evidence captured");step(5,"waiting","Add a provider key to enable language synthesis. SatQueryX will not fabricate an answer.")}step(6,"done","Execution trace recorded");setAudit(a=>[{time:new Date().toLocaleString(),workflow,query,provider,model:data.model||null,configured:Boolean(data.configured),observations,result:data.answer||data.message},...a].slice(0,20))}catch(e){const m=e instanceof Error?e.message:"Analysis failed";setError(m);step(3,"error",m);step(6,"done","Partial trace preserved")}finally{setRunning(false)}}
+  function report(){const text=`SATQUERYX MISSION REPORT\n\nWorkflow: ${workflow}\nQuery: ${query}\nPrimary: ${primary.file?.name||"none"}\nSecondary: ${secondary.file?.name||"none"}\nModalities: ${primary.modality}${secondary.file?` + ${secondary.modality}`:""}\nAOI: ${center[0].toFixed(5)}, ${center[1].toFixed(5)}\nAI configured: ${ai}\nModel: ${model||"not configured"}\n\nANSWER\n${answer||"No AI answer generated."}\n\nCHANGE\n${changeStats?`Changed fraction ${(changeStats.changedFraction*100).toFixed(2)}%\nMean difference ${changeStats.meanDifference.toFixed(4)}`:"Not computed"}`;const u=URL.createObjectURL(new Blob([text],{type:"text/plain"}));const a=document.createElement("a");a.href=u;a.download="satqueryx-mission-report.txt";a.click();URL.revokeObjectURL(u)}
+  return <main className="min-h-screen bg-[#05080d] text-slate-100"><div className="legacy-shell"><header className="legacy-header glass"><div className="flex items-center gap-3"><div className="brand-mark"><Satellite size={18}/></div><div><div className="app-logo">Sat<span>Query</span>X</div><div className="app-subtitle">SIH2026 · ISRO · REMOTE-SENSING INTELLIGENCE</div></div></div><div className="flex items-center gap-2"><span className="status-pill"><span/>AGENTIC PIPELINE ONLINE</span><button className="btn btn--secondary btn--sm" onClick={()=>setShowEarth(true)}><Globe2 size={13}/>3D Earth Explorer</button><button className="btn btn--ghost btn--sm" onClick={()=>setShowAudit(true)}><ShieldCheck size={13}/>Audit Trail</button></div></header><div className="legacy-grid"><aside className="legacy-left"><UploadPanel primary={primary} secondary={secondary} onPrimary={f=>load(f,"primary")} onSecondary={f=>load(f,"secondary")} onPrimaryModality={m=>setPrimary(p=>({...p,modality:m}))} onSecondaryModality={m=>setSecondary(p=>({...p,modality:m}))}/><QueryPanel query={query} onQuery={setQuery} onRun={runAnalysis} disabled={running||!primary.file} workflow={workflow} provider={provider} onProvider={setProvider}/><div className="panel p-3"><div className="panel-header mb-3"><div><h2 className="panel-title">Agent Execution</h2><p className="mt-1 text-[10px] text-slate-500">Live orchestration trace</p></div><Zap size={14} className="text-cyan-300"/></div><StepList steps={steps}/></div></aside><main className="legacy-center"><MissionViewer primary={primary} secondary={secondary} center={center} onCenter={setCenter} snippet={snippet} onSnippet={setSnippet} result={result} onOpenEarth={()=>setShowEarth(true)}/><StatusStrip workflow={workflow} files={(primary.file?1:0)+(secondary.file?1:0)} ai={ai} lastRun={audit[0]?.time||""}/><EvidencePanel result={result||{answer}} workflow={workflow} changeStats={changeStats}/></main><aside className="legacy-right"><ResultPanel result={result||{answer}} workflow={workflow} aiConfigured={ai} model={model} error={error}/><div className="panel p-3"><div className="panel-header mb-3"><div><h2 className="panel-title">Mission Telemetry</h2><p className="mt-1 text-[10px] text-slate-500">Current spatial context</p></div><Activity size={14} className="text-cyan-300"/></div><div className="grid grid-cols-2 gap-2"><div className="telemetry"><Satellite size={12}/><span>OPTICAL</span><b>{primary.file?"READY":"EMPTY"}</b></div><div className="telemetry"><Radar size={12}/><span>SAR</span><b>{secondary.file&&secondary.modality==="sar"?"READY":"STANDBY"}</b></div><div className="telemetry"><Target size={12}/><span>AOI</span><b>{snippet?"LOCKED":"MAP"}</b></div><div className="telemetry"><Database size={12}/><span>EVIDENCE</span><b>{answer||changeStats?"BUILT":"WAIT"}</b></div></div><div className="mt-3 rounded-lg border border-white/8 bg-white/[.02] p-3"><div className="text-[9px] uppercase tracking-[.16em] text-slate-600">Coordinates</div><div className="mt-1 font-mono text-xs text-cyan-200">{center[0].toFixed(5)}° N · {center[1].toFixed(5)}° E</div></div>{changeStats&&<div className="mt-2 rounded-lg border border-amber-300/15 bg-amber-300/5 p-3"><div className="text-[9px] uppercase tracking-[.16em] text-amber-300/70">Temporal delta</div><div className="mt-1 text-sm font-semibold text-amber-100">{(changeStats.changedFraction*100).toFixed(2)}% changed</div></div>}</div><button className="btn btn--secondary btn--full" onClick={report}><Download size={13}/>Download Mission Report</button></aside></div></div><ChatBot context={{provider,workflow,query,center,primary:primary.file?.name,secondary:secondary.file?.name,result:result||{answer},changeStats}}/><AuditModal open={showAudit} onClose={()=>setShowAudit(false)} entries={audit}/><LegacyEarthExplorer open={showEarth} onClose={()=>setShowEarth(false)} onSelect={(lat,lon)=>setCenter([lat,lon])}/></main>;
 }
