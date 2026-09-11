@@ -28,11 +28,14 @@ function Controller({ center, drawing, onCenterChange, onRoi }: { center:[number
   return <>{points.length>1&&<Polygon positions={points} pathOptions={{color:"#3DD6D0",weight:2,dashArray:"5 5",fillOpacity:0.08}}/>}</>;
 }
 
-export default function ExplorerMap({center,onCenterChange,drawing,onRoi}:{center:[number,number];onCenterChange:(c:[number,number])=>void;drawing:boolean;onRoi:(r:[number,number][][])=>void}) {
+export default function ExplorerMap({center,onCenterChange,drawing,onRoi,satellite=true}:{center:[number,number];onCenterChange:(c:[number,number])=>void;drawing:boolean;onRoi:(r:[number,number][][])=>void;satellite?:boolean}) {
   const icon=useMemo(()=>new L.Icon({iconUrl:"https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",iconRetinaUrl:"https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",shadowUrl:"https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",iconSize:[25,41],iconAnchor:[12,41]}),[]);
+  const tiles=satellite
+    ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+    : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
   return <div className="satqueryx-explorer-map-shell">
     <MapContainer center={center} zoom={5} doubleClickZoom={false} className="satqueryx-explorer-map" style={{height:"100%",width:"100%",background:"#050b10",zIndex:0}}>
-      <TileLayer attribution="© Esri" url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"/>
+      <TileLayer attribution={satellite ? "© Esri" : "© OpenStreetMap contributors"} url={tiles}/>
       <Marker position={center} icon={icon}/>
       <Controller center={center} drawing={drawing} onCenterChange={onCenterChange} onRoi={onRoi}/>
     </MapContainer>
