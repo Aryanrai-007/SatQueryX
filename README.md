@@ -2,8 +2,6 @@
 
 **Interactive Vision-Language Assistant for Multimodal Remote Sensing Image Analysis through Text Queries**
 
-SatQueryX is a no-login Streamlit application implementing the SIH2026 problem scope: single-image remote-sensing VQA plus captioning/grounding, bi-temporal change understanding, co-registered optical/SAR reasoning, and an observable agentic controller. The system reports missing models/services rather than substituting dummy outputs.
-
 ## SIH2026 requirement coverage
 
 | Requirement | SatQueryX implementation |
